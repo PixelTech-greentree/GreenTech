@@ -1,38 +1,66 @@
-from sqlalchemy import create_engine
+"""
+Async SQLAlchemy database configuration
+"""
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 import os
+from dotenv import load_dotenv
 
-from dotenv import load_dotenv  # ⬅️ YANGI
+# Load environment variables
+load_dotenv()
 
-# .env faylni yuklaymiz
-load_dotenv()  # ⬅️ YANGI
-
-# Endi DATABASE_URL har doim .env dan olinadi
+# Get database URL and convert to async format
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    # Minimal xavfsizlik: agar topilmasa, xato beramiz
     raise RuntimeError("DATABASE_URL is not set in environment or .env file")
 
-# Engine yaratamiz
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+# Convert PostgreSQL URL to async format
+# postgresql:// -> postgresql+asyncpg://
+if DATABASE_URL.startswith("postgresql://"):
+    ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+elif DATABASE_URL.startswith("sqlite"):
+    ASYNC_DATABASE_URL = DATABASE_URL.replace("sqlite:///", "sqlite+aiosqlite:///")
+else:
+    ASYNC_DATABASE_URL = DATABASE_URL
+
+# Create async engine
+engine = create_async_engine(
+    ASYNC_DATABASE_URL,
+    echo=False,
+    future=True
 )
 
-# Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Create async session factory
+AsyncSessionLocal = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False
+)
 
 # Base class for models
 Base = declarative_base()
 
 
-def get_db():
+async def init_db():
     """
-    Dependency for getting database session in FastAPI endpoints
+    Create all tables asynchronously
     """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    async with engine.begin() as conn:
+        # Import all models to ensure they're registered
+        from models import User, Tree, CheckIn, Task, TaskCompletionLog
+        
+        # Create all tables
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def get_db():
+    """
+    Dependency for getting async database session in FastAPI endpoints
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()

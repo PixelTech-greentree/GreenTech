@@ -1,30 +1,57 @@
 """
-Task generation engine based on tree phase, season, and conditions
+Task service with segments support and nearby tasks
 """
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, func
+from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
-from typing import List, Optional
-from sqlalchemy.orm import Session
+from math import radians, sin, cos, sqrt, atan2
 import uuid
 
-from models import Task, Tree
+from models import Task, Tree, User, TaskCompletionLog, CheckIn
+from schemas import TaskSchema, NearbyTaskItem, TreeWithTasksItem, TreeDetailResponse
 
 
 class TaskService:
     
     TASK_DESCRIPTIONS = {
-        "watering": "Daraxtingizni sug'oring va rasmga oling",
-        "photo_check": "Daraxt holatini tekshiring va rasmga oling",
-        "closeup_photo": "Daraxt barglarini yaqindan suratga oling",
-        "clean_area": "Daraxt atrofini tozalang va rasmga oling",
-        "fertilize": "Daraxtga o'g'it qo'shing",
-        "check_roots": "Ildiz atrofini tekshiring"
+        "watering": "Daraxtni sug'oring va rasmga oling",
+        "photo_check": "Daraxt holatini tekshiring",
+        "closeup": "Barglarni yaqindan suratga oling",
+        "clean_area": "Atrofni tozalang"
     }
     
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
     
+    @staticmethod
+    def _calculate_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Haversine formula - distance in km"""
+        R = 6371
+        lat1_rad, lat2_rad = radians(lat1), radians(lat2)
+        dlat = radians(lat2 - lat1)
+        dlon = radians(lon2 - lon1)
+        
+        a = sin(dlat/2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon/2)**2
+        c = 2 * atan2(sqrt(a), sqrt(1-a))
+        return R * c
+    
+    @staticmethod
+    def calculate_centroid(segments: List[List[float]]) -> Tuple[float, float]:
+        """
+        Calculate centroid from polygon segments
+        segments = [[lat1, lon1], [lat2, lon2], ...]
+        Returns: (centroid_lat, centroid_lon)
+        """
+        if not segments:
+            return 0.0, 0.0
+        
+        lats = [seg[0] for seg in segments]
+        lons = [seg[1] for seg in segments]
+        
+        return sum(lats) / len(lats), sum(lons) / len(lons)
+    
     def get_season(self, date: datetime) -> str:
-        """Determine season based on month"""
         month = date.month
         if month in [3, 4, 5]:
             return "spring"
@@ -35,159 +62,46 @@ class TaskService:
         else:
             return "winter"
     
-    def get_tree_phase(self, tree: Tree, current_date: datetime) -> str:
-        """
-        Determine tree phase based on age:
-        - seedling: 0-14 days
-        - young: 15-90 days
-        - mature: 90+ days
-        """
-        age_days = (current_date - tree.created_at).days
+    def calculate_watering_days(self, phase: str, season: str, moisture: str) -> int:
+        base = {"seedling": 1, "young": 3, "mature": 7}.get(phase, 3)
+        season_mod = {"spring": -1, "summer": -1, "autumn": 1, "winter": 7}.get(season, 0)
+        moisture_mod = {"dry": -base, "normal": 0, "wet": 2}.get(moisture, 0)
         
-        if age_days <= 14:
-            return "seedling"
-        elif age_days <= 90:
-            return "young"
-        else:
-            return "mature"
+        total = base + season_mod + moisture_mod
+        return max(0, min(total, 14))
     
-    def calculate_next_watering_days(
-        self, 
-        phase: str, 
-        season: str, 
-        soil_moisture: str
-    ) -> int:
-        """
-        Calculate days until next watering task.
-        
-        Base intervals:
-        - seedling: 1 day
-        - young: 3 days
-        - mature: 7 days
-        
-        Season modifiers:
-        - spring: -1 day
-        - summer: -1 day
-        - autumn: +1 day
-        - winter: +7 days
-        
-        Moisture modifiers:
-        - dry: 0 days (immediate)
-        - normal: no change
-        - wet: +2 days
-        """
-        # Base interval
-        base_days = {
-            "seedling": 1,
-            "young": 3,
-            "mature": 7
-        }.get(phase, 3)
-        
-        # Season modifier
-        season_modifier = {
-            "spring": -1,
-            "summer": -1,
-            "autumn": 1,
-            "winter": 7
-        }.get(season, 0)
-        
-        # Moisture modifier
-        moisture_modifier = {
-            "dry": -base_days,  # Make it 0 (immediate)
-            "normal": 0,
-            "wet": 2
-        }.get(soil_moisture, 0)
-        
-        total_days = base_days + season_modifier + moisture_modifier
-        
-        # Minimum 0 days, maximum 14 days
-        return max(0, min(total_days, 14))
-    
-    def calculate_next_check_days(
-        self, 
-        phase: str, 
-        season: str, 
-        health: str
-    ) -> int:
-        """
-        Calculate days until next photo check task.
-        
-        Base intervals:
-        - seedling: 2 days
-        - young: 5 days
-        - mature: 10 days
-        
-        Health modifiers:
-        - healthy: no change
-        - stressed: -2 days
-        - critical: -4 days
-        """
-        base_days = {
-            "seedling": 2,
-            "young": 5,
-            "mature": 10
-        }.get(phase, 5)
-        
-        health_modifier = {
-            "healthy": 0,
-            "stressed": -2,
-            "critical": -4
-        }.get(health, 0)
-        
-        season_modifier = {
-            "winter": 3
-        }.get(season, 0)
-        
-        total_days = base_days + health_modifier + season_modifier
-        
-        return max(1, min(total_days, 14))
-    
-    async def generate_initial_tasks(
-        self, 
-        tree: Tree, 
-        current_date: datetime
-    ) -> List[Task]:
-        """
-        Generate initial tasks after first planting.
-        
-        Creates:
-        1. Watering task (1 day)
-        2. Photo check task (2 days)
-        """
-        season = self.get_season(current_date)
-        phase = "seedling"
+    async def generate_initial_tasks(self, tree: Tree, now: datetime) -> List[Task]:
+        """Generate tasks after planting"""
+        season = self.get_season(now)
         
         tasks = []
         
-        # Watering task
-        watering_days = self.calculate_next_watering_days(phase, season, "normal")
-        watering_task = Task(
+        # Watering
+        watering_days = self.calculate_watering_days("seedling", season, "normal")
+        tasks.append(Task(
             id=str(uuid.uuid4()),
             tree_id=tree.id,
-            user_id=tree.user_id,
+            created_by_user_id=tree.user_id,
             type="watering",
             status="pending",
-            created_at=current_date,
-            due_date=current_date + timedelta(days=watering_days),
+            created_at=now,
+            due_date=now + timedelta(days=watering_days),
             reward_points=30,
             description=self.TASK_DESCRIPTIONS["watering"]
-        )
-        tasks.append(watering_task)
+        ))
         
-        # Photo check task
-        check_days = self.calculate_next_check_days(phase, season, "healthy")
-        check_task = Task(
+        # Photo check
+        tasks.append(Task(
             id=str(uuid.uuid4()),
             tree_id=tree.id,
-            user_id=tree.user_id,
+            created_by_user_id=tree.user_id,
             type="photo_check",
             status="pending",
-            created_at=current_date,
-            due_date=current_date + timedelta(days=check_days),
+            created_at=now,
+            due_date=now + timedelta(days=2),
             reward_points=20,
             description=self.TASK_DESCRIPTIONS["photo_check"]
-        )
-        tasks.append(check_task)
+        ))
         
         return tasks
     
@@ -196,106 +110,272 @@ class TaskService:
         tree: Tree,
         ai_health: str,
         ai_soil_moisture: str,
-        current_date: datetime
+        now: datetime
     ) -> List[Task]:
-        """
-        Generate next tasks based on tree condition and phase.
-        """
-        season = self.get_season(current_date)
-        phase = self.get_tree_phase(tree, current_date)
+        """Generate next tasks based on condition"""
+        season = self.get_season(now)
+        age_days = (now - tree.created_at).days
+        
+        if age_days <= 14:
+            phase = "seedling"
+        elif age_days <= 90:
+            phase = "young"
+        else:
+            phase = "mature"
         
         tasks = []
         
-        # Always generate a watering task
-        watering_days = self.calculate_next_watering_days(
-            phase, season, ai_soil_moisture
-        )
-        watering_task = Task(
+        # Watering
+        watering_days = self.calculate_watering_days(phase, season, ai_soil_moisture)
+        tasks.append(Task(
             id=str(uuid.uuid4()),
             tree_id=tree.id,
-            user_id=tree.user_id,
+            created_by_user_id=tree.user_id,
             type="watering",
             status="pending",
-            created_at=current_date,
-            due_date=current_date + timedelta(days=watering_days),
+            created_at=now,
+            due_date=now + timedelta(days=watering_days),
             reward_points=30,
             description=self.TASK_DESCRIPTIONS["watering"]
-        )
-        tasks.append(watering_task)
+        ))
         
-        # Generate photo check task
-        check_days = self.calculate_next_check_days(phase, season, ai_health)
-        check_task = Task(
+        # Photo check
+        check_days = 2 if phase == "seedling" else 5 if phase == "young" else 10
+        if ai_health == "critical":
+            check_days = 1
+        
+        tasks.append(Task(
             id=str(uuid.uuid4()),
             tree_id=tree.id,
-            user_id=tree.user_id,
+            created_by_user_id=tree.user_id,
             type="photo_check",
             status="pending",
-            created_at=current_date,
-            due_date=current_date + timedelta(days=check_days),
+            created_at=now,
+            due_date=now + timedelta(days=check_days),
             reward_points=20,
             description=self.TASK_DESCRIPTIONS["photo_check"]
-        )
-        tasks.append(check_task)
-        
-        # If tree is stressed or critical, add urgent tasks
-        if ai_health == "critical":
-            urgent_task = Task(
-                id=str(uuid.uuid4()),
-                tree_id=tree.id,
-                user_id=tree.user_id,
-                type="closeup_photo",
-                status="pending",
-                created_at=current_date,
-                due_date=current_date + timedelta(days=1),
-                reward_points=25,
-                description="TEZKOR: Daraxt kasallanishi mumkin, yaqindan rasmga oling"
-            )
-            tasks.append(urgent_task)
-        
-        # If soil is very dry, prioritize watering
-        if ai_soil_moisture == "dry":
-            # Update watering task to be immediate
-            watering_task.due_date = current_date
-            watering_task.description = "TEZKOR: Tuproq quruq, darhol sug'oring!"
-        
-        # For mature trees in good health, add maintenance tasks
-        if phase == "mature" and ai_health == "healthy":
-            clean_task = Task(
-                id=str(uuid.uuid4()),
-                tree_id=tree.id,
-                user_id=tree.user_id,
-                type="clean_area",
-                status="pending",
-                created_at=current_date,
-                due_date=current_date + timedelta(days=7),
-                reward_points=15,
-                description=self.TASK_DESCRIPTIONS["clean_area"]
-            )
-            tasks.append(clean_task)
+        ))
         
         return tasks
     
-    async def check_and_apply_penalties(
+    # ========================================================================
+    # NEARBY TASKS (PUBLIC)
+    # ========================================================================
+    
+    async def release_expired_reservations(self) -> None:
+        """Release tasks claimed > 30 min ago"""
+        now = datetime.utcnow()
+        thirty_min_ago = now - timedelta(minutes=30)
+        
+        query = select(Task, User).join(User, Task.assigned_user_id == User.id).where(
+            and_(
+                Task.status == 'claimed',
+                Task.claimed_at < thirty_min_ago
+            )
+        )
+        
+        result = await self.db.execute(query)
+        expired = result.all()
+        
+        for task, user in expired:
+            # Penalty
+            user.total_points -= 30
+            
+            # Log
+            log = TaskCompletionLog(
+                id=str(uuid.uuid4()),
+                user_id=user.id,
+                task_id=task.id,
+                delta_points=-30,
+                reason="reservation_timeout"
+            )
+            self.db.add(log)
+            
+            # Release
+            task.status = "pending"
+            task.assigned_user_id = None
+            task.claimed_at = None
+        
+        if expired:
+            await self.db.commit()
+    
+    async def get_nearby_tasks(
         self,
         user_id: str,
-        current_date: datetime
-    ) -> List[Task]:
+        latitude: float,
+        longitude: float
+    ) -> List[NearbyTaskItem]:
         """
-        Check for overdue tasks and apply penalties.
-        Returns list of tasks that were marked as OFF with penalties.
+        Get public tasks within 2km, due today or next 2 days
         """
-        overdue_tasks = self.db.query(Task).filter(
-            Task.user_id == user_id,
-            Task.status == "pending",
-            Task.due_date < current_date
-        ).all()
+        now = datetime.utcnow()
+        two_days_later = now + timedelta(days=2)
         
-        penalized_tasks = []
-        for task in overdue_tasks:
-            task.status = "off"
-            task.penalty_points = -35
-            penalized_tasks.append(task)
+        # Get all pending tasks
+        query = (
+            select(Task, Tree, User)
+            .join(Tree, Task.tree_id == Tree.id)
+            .join(User, Tree.user_id == User.id)
+            .where(and_(
+                Task.status == 'pending',
+                Task.assigned_user_id == None,
+                Task.due_date <= two_days_later,
+                Tree.status == 'active'
+            ))
+        )
         
-        self.db.commit()
-        return penalized_tasks
+        result = await self.db.execute(query)
+        rows = result.all()
+        
+        # Filter by distance
+        nearby = []
+        for task, tree, owner in rows:
+            # Use centroid if available, else original coords
+            tree_lat = tree.centroid_lat if tree.centroid_lat else tree.latitude
+            tree_lon = tree.centroid_lon if tree.centroid_lon else tree.longitude
+            
+            dist_km = self._calculate_distance_km(latitude, longitude, tree_lat, tree_lon)
+            
+            if dist_km <= 2.0:
+                nearby.append(NearbyTaskItem(
+                    task_id=task.id,
+                    tree_id=task.tree_id,
+                    tree_owner_id=task.created_by_user_id,
+                    tree_latitude=tree_lat,
+                    tree_longitude=tree_lon,
+                    type=task.type,
+                    status=task.status,
+                    due_date=task.due_date,
+                    distance_meters=dist_km * 1000,
+                    reward_points=task.reward_points,
+                    penalty_points=task.penalty_points,
+                    assigned_user_id=None,
+                    claimed_at=None,
+                    is_my_tree=(task.created_by_user_id == user_id)
+                ))
+        
+        # Sort by distance
+        nearby.sort(key=lambda x: x.distance_meters)
+        return nearby
+    
+    async def claim_task(
+        self,
+        user_id: str,
+        task_id: str
+    ) -> Tuple[bool, str, Optional[TaskSchema]]:
+        """Claim a public task"""
+        query = select(Task).where(Task.id == task_id)
+        result = await self.db.execute(query)
+        task = result.scalar_one_or_none()
+        
+        if not task:
+            return False, "Vazifa topilmadi", None
+        
+        if task.status != "pending":
+            return False, f"Vazifa {task.status} holatida, olib bo'lmaydi", None
+        
+        if task.assigned_user_id:
+            return False, "Bu vazifa allaqachon olingan", None
+        
+        # Claim
+        task.status = "claimed"
+        task.assigned_user_id = user_id
+        task.claimed_at = datetime.utcnow()
+        
+        await self.db.commit()
+        await self.db.refresh(task)
+        
+        return True, "Vazifa olindi! 30 daqiqa ichida bajaring.", TaskSchema.from_orm(task)
+    
+    # ========================================================================
+    # MY TREES
+    # ========================================================================
+    
+    async def get_user_trees_with_tasks(self, user_id: str) -> List[TreeWithTasksItem]:
+        """Get user's trees with tasks"""
+        query = select(Tree).where(Tree.user_id == user_id).order_by(Tree.created_at.desc())
+        result = await self.db.execute(query)
+        trees = result.scalars().all()
+        
+        items = []
+        for tree in trees:
+            # Pending tasks
+            pending_q = select(Task).where(and_(
+                Task.tree_id == tree.id,
+                Task.status == 'pending'
+            )).order_by(Task.due_date)
+            pending_r = await self.db.execute(pending_q)
+            pending = [TaskSchema.from_orm(t) for t in pending_r.scalars().all()]
+            
+            # Completed tasks
+            completed_q = select(Task).where(and_(
+                Task.tree_id == tree.id,
+                Task.status == 'completed'
+            )).order_by(Task.completed_at.desc()).limit(10)
+            completed_r = await self.db.execute(completed_q)
+            completed = [TaskSchema.from_orm(t) for t in completed_r.scalars().all()]
+            
+            items.append(TreeWithTasksItem(
+                id=tree.id,
+                latitude=tree.latitude,
+                longitude=tree.longitude,
+                centroid_lat=tree.centroid_lat,
+                centroid_lon=tree.centroid_lon,
+                segments=tree.segments,
+                phase=tree.phase,
+                status=tree.status,
+                last_health=tree.last_health,
+                last_soil_moisture=tree.last_soil_moisture,
+                created_at=tree.created_at,
+                pending_tasks=pending,
+                completed_tasks=completed
+            ))
+        
+        return items
+    
+    async def get_tree_detail(self, tree_id: str) -> Optional[TreeDetailResponse]:
+        """Get tree detail"""
+        query = select(Tree).where(Tree.id == tree_id)
+        result = await self.db.execute(query)
+        tree = result.scalar_one_or_none()
+        
+        if not tree:
+            return None
+        
+        # Tasks
+        pending_q = select(Task).where(and_(Task.tree_id == tree_id, Task.status == 'pending'))
+        pending_r = await self.db.execute(pending_q)
+        pending = [TaskSchema.from_orm(t) for t in pending_r.scalars().all()]
+        
+        completed_q = select(Task).where(and_(Task.tree_id == tree_id, Task.status == 'completed')).limit(10)
+        completed_r = await self.db.execute(completed_q)
+        completed = [TaskSchema.from_orm(t) for t in completed_r.scalars().all()]
+        
+        # Checkins count
+        count_q = select(func.count(CheckIn.id)).where(CheckIn.tree_id == tree_id)
+        total_checkins = await self.db.scalar(count_q) or 0
+        
+        # Last checkin
+        last_q = select(CheckIn).where(CheckIn.tree_id == tree_id).order_by(CheckIn.timestamp.desc())
+        last_r = await self.db.execute(last_q)
+        last_checkin = last_r.scalars().first()
+        
+        return TreeDetailResponse(
+            tree=TreeWithTasksItem(
+                id=tree.id,
+                latitude=tree.latitude,
+                longitude=tree.longitude,
+                centroid_lat=tree.centroid_lat,
+                centroid_lon=tree.centroid_lon,
+                segments=tree.segments,
+                phase=tree.phase,
+                status=tree.status,
+                last_health=tree.last_health,
+                last_soil_moisture=tree.last_soil_moisture,
+                created_at=tree.created_at,
+                pending_tasks=pending,
+                completed_tasks=completed
+            ),
+            last_checkin={"timestamp": last_checkin.timestamp.isoformat()} if last_checkin else None,
+            total_checkins=total_checkins
+        )
