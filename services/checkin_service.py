@@ -26,8 +26,10 @@ class CheckInService:
     
     MEDIA_DIR = Path("media/checkins")
     DUPLICATE_HASH_THRESHOLD = 5
-    MAX_DISTANCE_METERS_OWNER = 5
-    MAX_DISTANCE_METERS_PUBLIC = float('inf')  # No limit for public
+    
+    # GPS MASOFALAR - To'g'irlangan
+    MAX_DISTANCE_METERS_OWNER = 50     # Daraxt egasi uchun 50 metr
+    MAX_DISTANCE_METERS_PUBLIC = 100   # Boshqa foydalanuvchilar uchun 100 metr
     
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -280,18 +282,24 @@ class CheckInService:
         is_owner = (tree.user_id == user_id)
         max_distance = self.MAX_DISTANCE_METERS_OWNER if is_owner else self.MAX_DISTANCE_METERS_PUBLIC
         
+        # Use centroid if available, otherwise use original coordinates
+        tree_lat = tree.centroid_lat if tree.centroid_lat else tree.latitude
+        tree_lon = tree.centroid_lon if tree.centroid_lon else tree.longitude
+        
         distance = self._calculate_distance(
             latitude, longitude,
-            tree.latitude, tree.longitude
+            tree_lat, tree_lon
         )
         
+        # MUHIM: Faqat juda uzoq bo'lsa rad etamiz
         if distance > max_distance:
             user = await self._get_user(user_id)
+            owner_text = "o'z" if is_owner else "bu"
             return CheckInAnalysisResponse(
                 status="ANALYZED",
                 accepted=False,
                 error_code="LOCATION_MISMATCH",
-                message=f"Siz daraxtdan {int(distance)}m uzoqdasiz. Yaqinroq boring.",
+                message=f"Siz {owner_text} daraxtdan {int(distance)}m uzoqdasiz. Maksimal masofa: {int(max_distance)}m",
                 tree_id=tree_id,
                 points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
             )
@@ -398,7 +406,7 @@ class CheckInService:
                     status="ANALYZED",
                     accepted=False,
                     error_code="TASK_LATE",
-                    message="Vazifa muddati o'tgan, -35 ball jar imasi",
+                    message="Vazifa muddati o'tgan, -35 ball jarimasi",
                     tree_id=tree_id,
                     updated_tasks=[TaskSchema.from_orm(task)],
                     points=PointsSummary(awarded=0, penalty=penalty_points, total=user.total_points)

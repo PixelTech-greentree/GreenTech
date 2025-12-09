@@ -1,8 +1,9 @@
 """
 Pydantic schemas for request/response validation
+Complete version with combined trees (DB + Satellite) support
 """
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 
 
@@ -31,7 +32,7 @@ class UserResponse(BaseModel):
     is_verified: bool
     created_at: datetime
     last_login: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -75,7 +76,7 @@ class TaskSchema(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
     claimed_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -114,7 +115,7 @@ class TreeBasicInfo(BaseModel):
     latitude: float
     longitude: float
     successful_waterings: int
-    
+
     class Config:
         from_attributes = True
 
@@ -225,18 +226,12 @@ class UserStatsResponse(BaseModel):
     claimed_tasks: int
 
 
-# Bu yerga schemas.py ga qo'shish kerak bo'lgan qismlar
-
-from typing import List, Optional, Dict, Any
-
-# ... mavjud schemalar ...
-
 # ============================================================================
-# NEARBY SATELLITE TREES SCHEMAS
+# COMBINED NEARBY TREES SCHEMAS (DB + SATELLITE)
 # ============================================================================
 
 class NearbyTreesSearchRequest(BaseModel):
-    """Request to search for nearby satellite trees"""
+    """Request to search for nearby trees"""
     latitude: float = Field(..., description="User's current latitude")
     longitude: float = Field(..., description="User's current longitude")
     radius_km: float = Field(2.0, description="Search radius in kilometers", ge=0.1, le=10.0)
@@ -244,8 +239,9 @@ class NearbyTreesSearchRequest(BaseModel):
 
 
 class SatelliteTreeInfo(BaseModel):
-    """Information about a satellite-detected tree"""
+    """Satellite-detected tree information"""
     tree_id: str
+    source: str = "satellite"
     class_name: str
     confidence: float
     centroid_lat: float
@@ -256,38 +252,119 @@ class SatelliteTreeInfo(BaseModel):
     box: Dict[str, Any]
 
 
+class UserPlantedTreeInfo(BaseModel):
+    """User-planted tree information from database"""
+    tree_id: str
+    source: str = "user_planted"
+    user_id: str
+    phase: str
+    status: str
+    health: Optional[str] = None
+    soil_moisture: Optional[str] = None
+    centroid_lat: float
+    centroid_lon: float
+    segments: List[List[float]] = []
+    distance_meters: float
+    distance_km: float
+    created_at: Optional[str] = None
+
+
+class CombinedTreeInfo(BaseModel):
+    """Combined tree info that can be either satellite or user-planted"""
+    tree_id: str
+    source: str  # "satellite" or "user_planted"
+    centroid_lat: float
+    centroid_lon: float
+    distance_meters: float
+    distance_km: float
+    segments: List[List[float]] = []
+    
+    # Satellite-specific fields (optional)
+    class_name: Optional[str] = None
+    confidence: Optional[float] = None
+    box: Optional[Dict[str, Any]] = None
+    
+    # User-planted specific fields (optional)
+    user_id: Optional[str] = None
+    phase: Optional[str] = None
+    status: Optional[str] = None
+    health: Optional[str] = None
+    soil_moisture: Optional[str] = None
+    created_at: Optional[str] = None
+
+
 class NearbyTreesResponse(BaseModel):
-    """Response with nearby satellite trees"""
+    """Response with nearby trees from both sources"""
     user_location: Dict[str, float]
     radius_km: float
     total_found: int
-    trees: List[SatelliteTreeInfo]
+    trees: List[Union[SatelliteTreeInfo, UserPlantedTreeInfo, Dict[str, Any]]]
 
 
 class BoundingBoxRequest(BaseModel):
     """Request trees within a bounding box"""
-    north: float = Field(..., description="Northern latitude")
-    south: float = Field(..., description="Southern latitude")
-    east: float = Field(..., description="Eastern longitude")
-    west: float = Field(..., description="Western longitude")
+    north: float = Field(..., description="Northern latitude boundary")
+    south: float = Field(..., description="Southern latitude boundary")
+    east: float = Field(..., description="Eastern longitude boundary")
+    west: float = Field(..., description="Western longitude boundary")
 
 
 class TreeDetailsResponse(BaseModel):
-    """Detailed information about a specific tree"""
+    """Detailed information about a specific tree (satellite or user-planted)"""
     tree_id: str
-    class_name: str
-    confidence: float
+    source: str  # "satellite" or "user_planted"
     centroid_lat: float
     centroid_lon: float
     segments: List[List[float]]
-    box: Dict[str, Any]
-    segment_count: int
+    
+    # Satellite-specific fields
+    class_name: Optional[str] = None
+    confidence: Optional[float] = None
+    box: Optional[Dict[str, Any]] = None
+    segment_count: Optional[int] = None
+    
+    # User-planted specific fields
+    user_id: Optional[str] = None
+    phase: Optional[str] = None
+    status: Optional[str] = None
+    health: Optional[str] = None
+    soil_moisture: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 class SatelliteTreesStatsResponse(BaseModel):
-    """Statistics about satellite trees dataset"""
+    """Statistics about satellite trees dataset only"""
     total_trees: int
     avg_confidence: float
     min_confidence: float
     max_confidence: float
-    avg_segments_per_tree: float
+    avg_segments_per_tree: Optional[float] = None
+
+
+class CombinedTreesStatsResponse(BaseModel):
+    """Statistics about all trees (satellite + user-planted)"""
+    satellite_trees: int
+    user_planted_trees: int
+    total_trees: int
+    satellite_avg_confidence: Optional[float] = None
+    satellite_min_confidence: Optional[float] = None
+    satellite_max_confidence: Optional[float] = None
+
+
+# ============================================================================
+# STANDARD API RESPONSES
+# ============================================================================
+
+class SuccessResponse(BaseModel):
+    """Standard success response"""
+    success: bool = True
+    message: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
+class ErrorResponse(BaseModel):
+    """Standard error response"""
+    success: bool = False
+    error: str
+    error_code: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None

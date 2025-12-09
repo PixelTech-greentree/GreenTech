@@ -1,5 +1,5 @@
 """
-GreenTech Backend - Complete System with Nearby Trees
+GreenTech Backend - Complete System with Combined Trees (DB + Satellite)
 Port: 5512
 Database: PostgreSQL (Async)
 """
@@ -20,8 +20,8 @@ from services.nearby_trees_service import NearbyTreesService
 
 app = FastAPI(
     title="GreenTech Complete API",
-    version="5.0.0",
-    description="Full backend with nearby satellite trees feature",
+    version="6.0.0",
+    description="Full backend with combined user-planted and satellite trees",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -35,18 +35,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Nearby Trees Service (global)
-nearby_trees_service = NearbyTreesService("cords_tree.json")
-
 
 @app.on_event("startup")
 async def startup():
-    """Initialize database and load satellite trees"""
+    """Initialize database"""
     await init_db()
     print("✅ Database initialized on port 5512")
-    
-    stats = nearby_trees_service.get_statistics()
-    print(f"✅ Loaded {stats['total_trees']} satellite trees")
+    print("✅ Nearby Trees Service ready (DB + Satellite)")
 
 
 @app.get("/")
@@ -54,14 +49,14 @@ async def root():
     return {
         "status": "ok",
         "service": "GreenTech Complete API",
-        "version": "5.0.0",
+        "version": "6.0.0",
         "port": 5512,
-        "features": ["auth", "checkins", "tasks", "rating", "nearby_trees"]
+        "features": ["auth", "checkins", "tasks", "rating", "combined_nearby_trees"]
     }
 
 
 # ============================================================================
-# AUTHENTICATION (mavjud kodlar)
+# AUTHENTICATION
 # ============================================================================
 
 @app.post("/api/v1/auth/register", response_model=AuthResponse, tags=["Auth"])
@@ -75,12 +70,12 @@ async def register(
         full_name=request.full_name,
         password=request.password
     )
-    
+
     if not success:
         raise HTTPException(status_code=400, detail=message)
-    
+
     token = auth_service.generate_token(user.id)
-    
+
     return AuthResponse(
         success=True,
         message=message,
@@ -99,10 +94,10 @@ async def login(
         phone_number=request.phone_number,
         password=request.password
     )
-    
+
     if not success:
         raise HTTPException(status_code=400, detail=message)
-    
+
     return AuthResponse(
         success=True,
         message=message,
@@ -118,15 +113,15 @@ async def get_current_user(
 ):
     auth_service = AuthService(db)
     user = await auth_service.verify_token(token)
-    
+
     if not user:
         raise HTTPException(status_code=401, detail="Token noto'g'ri")
-    
+
     return UserResponse.from_orm(user)
 
 
 # ============================================================================
-# CHECK-IN (mavjud kodlar)
+# CHECK-IN
 # ============================================================================
 
 @app.post("/api/v1/checkins/analyze", response_model=CheckInAnalysisResponse, tags=["Check-ins"])
@@ -142,7 +137,7 @@ async def analyze_checkin(
     db: AsyncSession = Depends(get_db)
 ):
     service = CheckInService(db)
-    
+
     try:
         result = await service.process_checkin(
             user_id=user_id,
@@ -162,100 +157,154 @@ async def analyze_checkin(
 
 
 # ============================================================================
-# NEARBY SATELLITE TREES (YANGI!)
+# NEARBY TREES - COMBINED (DB + SATELLITE) - YANGI!
 # ============================================================================
 
-@app.post("/api/v1/trees/nearby", response_model=NearbyTreesResponse, tags=["Satellite Trees"])
-async def get_nearby_satellite_trees(
-    request: NearbyTreesSearchRequest
+@app.get("/api/v1/trees/nearby", tags=["Trees"])
+async def get_nearby_trees(
+    lat: float = Query(..., description="User's latitude"),
+    lon: float = Query(..., description="User's longitude"),
+    radius_km: float = Query(2.0, ge=0.1, le=10, description="Search radius in km"),
+    limit: int = Query(50, ge=1, le=200, description="Max results"),
+    include_satellite: bool = Query(True, description="Include satellite trees"),
+    include_user_planted: bool = Query(True, description="Include user-planted trees"),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Get satellite-detected trees near user's location
+    Get nearby trees from BOTH sources:
+    - User-planted trees (from database)
+    - Satellite-detected trees (from JSON)
     
-    - **latitude**: User's current latitude
-    - **longitude**: User's current longitude
-    - **radius_km**: Search radius in kilometers (default: 2.0, max: 10.0)
-    - **limit**: Maximum number of trees to return (default: 50, max: 200)
+    Returns trees sorted by distance (closest first)
+    
+    Response includes 'source' field:
+    - "user_planted" = foydalanuvchi ekgan daraxt
+    - "satellite" = sun'iy yo'ldoshdan aniqlangan
     """
     try:
-        trees = nearby_trees_service.get_nearby_trees(
-            user_lat=request.latitude,
-            user_lon=request.longitude,
-            radius_km=request.radius_km,
-            limit=request.limit
-        )
+        service = NearbyTreesService(db=db)
         
-        return NearbyTreesResponse(
-            user_location={
-                "latitude": request.latitude,
-                "longitude": request.longitude
-            },
-            radius_km=request.radius_km,
-            total_found=len(trees),
-            trees=[SatelliteTreeInfo(**tree) for tree in trees]
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/v1/trees/satellite/{tree_id}", response_model=TreeDetailsResponse, tags=["Satellite Trees"])
-async def get_satellite_tree_details(tree_id: str):
-    """
-    Get detailed information about a specific satellite tree
-    
-    - **tree_id**: Satellite tree identifier (e.g., sat_0_1234)
-    """
-    tree_details = nearby_trees_service.get_tree_details(tree_id)
-    
-    if not tree_details:
-        raise HTTPException(status_code=404, detail="Satellite tree not found")
-    
-    return TreeDetailsResponse(**tree_details)
-
-
-@app.post("/api/v1/trees/bounds", tags=["Satellite Trees"])
-async def get_trees_in_bounds(request: BoundingBoxRequest):
-    """
-    Get all satellite trees within a bounding box
-    
-    - **north**: Northern latitude boundary
-    - **south**: Southern latitude boundary  
-    - **east**: Eastern longitude boundary
-    - **west**: Western longitude boundary
-    """
-    try:
-        trees = nearby_trees_service.get_trees_in_bounds(
-            north=request.north,
-            south=request.south,
-            east=request.east,
-            west=request.west
+        trees = await service.get_nearby_trees(
+            user_lat=lat,
+            user_lon=lon,
+            radius_km=radius_km,
+            limit=limit,
+            include_satellite=include_satellite,
+            include_user_planted=include_user_planted
         )
         
         return {
-            "bounds": {
-                "north": request.north,
-                "south": request.south,
-                "east": request.east,
-                "west": request.west
+            "success": True,
+            "count": len(trees),
+            "radius_km": radius_km,
+            "user_location": {"lat": lat, "lon": lon},
+            "sources": {
+                "satellite_enabled": include_satellite,
+                "user_planted_enabled": include_user_planted
             },
-            "total_found": len(trees),
             "trees": trees
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/trees/satellite/stats", response_model=SatelliteTreesStatsResponse, tags=["Satellite Trees"])
-async def get_satellite_trees_stats():
+@app.get("/api/v1/trees/details/{tree_id}", tags=["Trees"])
+async def get_tree_details(
+    tree_id: str,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Get statistics about the loaded satellite trees dataset
+    Get detailed information about a specific tree
+    
+    Works for both:
+    - User-planted trees (UUID format)
+    - Satellite trees (sat_* format)
     """
-    stats = nearby_trees_service.get_statistics()
-    return SatelliteTreesStatsResponse(**stats)
+    try:
+        service = NearbyTreesService(db=db)
+        tree = await service.get_tree_details(tree_id)
+        
+        if not tree:
+            raise HTTPException(status_code=404, detail="Tree not found")
+        
+        return {
+            "success": True,
+            "tree": tree
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/trees/bounds", tags=["Trees"])
+async def get_trees_in_bounds(
+    north: float = Query(..., description="Northern boundary"),
+    south: float = Query(..., description="Southern boundary"),
+    east: float = Query(..., description="Eastern boundary"),
+    west: float = Query(..., description="Western boundary"),
+    include_satellite: bool = Query(True),
+    include_user_planted: bool = Query(True),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get all trees within a bounding box
+    
+    Useful for map view rendering - returns all trees in viewport
+    """
+    try:
+        service = NearbyTreesService(db=db)
+        
+        trees = await service.get_trees_in_bounds(
+            north=north,
+            south=south,
+            east=east,
+            west=west,
+            include_satellite=include_satellite,
+            include_user_planted=include_user_planted
+        )
+        
+        return {
+            "success": True,
+            "count": len(trees),
+            "bounds": {
+                "north": north,
+                "south": south,
+                "east": east,
+                "west": west
+            },
+            "trees": trees
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/trees/statistics", tags=["Trees"])
+async def get_tree_statistics(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get statistics about all trees in the system
+    
+    Shows counts for:
+    - User-planted trees (from database)
+    - Satellite trees (from JSON)
+    - Total trees
+    """
+    try:
+        service = NearbyTreesService(db=db)
+        stats = await service.get_statistics()
+        
+        return {
+            "success": True,
+            "statistics": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
-# NEARBY TASKS (mavjud kodlar)
+# TASKS
 # ============================================================================
 
 @app.post("/api/v1/tasks/nearby", response_model=NearbyTasksResponse, tags=["Tasks"])
@@ -264,16 +313,16 @@ async def get_nearby_tasks(
     db: AsyncSession = Depends(get_db)
 ):
     task_service = TaskService(db)
-    
+
     try:
         await task_service.release_expired_reservations()
-        
+
         tasks = await task_service.get_nearby_tasks(
             user_id=request.user_id,
             latitude=request.latitude,
             longitude=request.longitude
         )
-        
+
         return NearbyTasksResponse(
             user_id=request.user_id,
             now=datetime.utcnow().isoformat(),
@@ -289,18 +338,18 @@ async def claim_task(
     db: AsyncSession = Depends(get_db)
 ):
     task_service = TaskService(db)
-    
+
     try:
         await task_service.release_expired_reservations()
-        
+
         success, message, task = await task_service.claim_task(
             user_id=request.user_id,
             task_id=request.task_id
         )
-        
+
         if not success:
             raise HTTPException(status_code=400, detail=message)
-        
+
         return TaskClaimResponse(
             success=True,
             message=message,
@@ -313,7 +362,7 @@ async def claim_task(
 
 
 # ============================================================================
-# MY TREES (mavjud kodlar)
+# MY TREES
 # ============================================================================
 
 @app.get("/api/v1/users/{user_id}/trees", response_model=MyTreesResponse, tags=["My Trees"])
@@ -322,10 +371,10 @@ async def get_my_trees(
     db: AsyncSession = Depends(get_db)
 ):
     task_service = TaskService(db)
-    
+
     try:
         trees = await task_service.get_user_trees_with_tasks(user_id)
-        
+
         return MyTreesResponse(
             user_id=user_id,
             trees=trees
@@ -340,13 +389,13 @@ async def get_tree_detail(
     db: AsyncSession = Depends(get_db)
 ):
     task_service = TaskService(db)
-    
+
     try:
         tree_detail = await task_service.get_tree_detail(tree_id)
-        
+
         if not tree_detail:
             raise HTTPException(status_code=404, detail="Daraxt topilmadi")
-        
+
         return tree_detail
     except HTTPException:
         raise
@@ -355,7 +404,7 @@ async def get_tree_detail(
 
 
 # ============================================================================
-# RATING (mavjud kodlar)
+# RATING
 # ============================================================================
 
 @app.get("/api/v1/users/rating", response_model=RatingResponse, tags=["Rating"])
@@ -366,14 +415,14 @@ async def get_rating(
     db: AsyncSession = Depends(get_db)
 ):
     rating_service = RatingService(db)
-    
+
     try:
         leaderboard = await rating_service.get_leaderboard(
             range_type=range,
             from_date=from_date,
             to_date=to_date
         )
-        
+
         return RatingResponse(
             range_type=range,
             from_date=from_date,
@@ -390,10 +439,48 @@ async def get_user_stats(
     db: AsyncSession = Depends(get_db)
 ):
     rating_service = RatingService(db)
-    
+
     try:
         stats = await rating_service.get_user_stats(user_id)
         return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# LEGACY ENDPOINTS (Backward Compatibility)
+# ============================================================================
+
+@app.post("/api/v1/trees/nearby", tags=["Trees (Legacy)"])
+async def legacy_nearby_trees(
+    request: NearbyTreesSearchRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    LEGACY: POST method for backward compatibility
+    Use GET /api/v1/trees/nearby instead
+    """
+    try:
+        service = NearbyTreesService(db=db)
+        
+        trees = await service.get_nearby_trees(
+            user_lat=request.latitude,
+            user_lon=request.longitude,
+            radius_km=request.radius_km,
+            limit=request.limit,
+            include_satellite=True,
+            include_user_planted=True
+        )
+        
+        return {
+            "user_location": {
+                "latitude": request.latitude,
+                "longitude": request.longitude
+            },
+            "radius_km": request.radius_km,
+            "total_found": len(trees),
+            "trees": trees
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
