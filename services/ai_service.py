@@ -1,11 +1,11 @@
 """
-AI Service with balanced validation for OpenAI GPT-4o Vision
+AI Service with enhanced feedback and Greenify AI task generation
 """
 import os
 import json
 import base64
-from typing import Dict
-from datetime import datetime
+from typing import Dict, List
+from datetime import datetime, timedelta
 from openai import AsyncOpenAI
 
 
@@ -17,107 +17,118 @@ class AIService:
     def _log(self, message: str, data: any = None):
         """Print log with timestamp"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{timestamp}] [AI] {message}")
+        print(f"[{timestamp}] [Greenify AI] {message}")
         if data:
             if isinstance(data, dict):
-                print(f"[{timestamp}] [AI] Data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+                print(f"[{timestamp}] [Greenify AI] Data: {json.dumps(data, ensure_ascii=False, indent=2)}")
             else:
-                print(f"[{timestamp}] [AI] Data: {data}")
+                print(f"[{timestamp}] [Greenify AI] Data: {data}")
 
     async def analyze_single_image(self, image_bytes: bytes) -> Dict:
         """
-        Analyze tree image with balanced validation
-
-        Returns:
-        {
-            "is_tree": bool,
-            "is_real_photo": bool,
-            "is_seedling": bool,
-            "maturity": str,
-            "health": str,
-            "soil_moisture": str,
-            "comment": str (Uzbek)
-        }
+        Analyze tree image with detailed feedback
+        
+        Returns enhanced analysis with:
+        - Basic validation (is_tree, is_real_photo, is_seedling)
+        - Detailed health assessment
+        - Professional recommendations
+        - Care instructions
         """
         self._log(f"Rasm tahlili boshlandi, hajmi: {len(image_bytes)} bytes")
         
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
 
-        prompt = """Sen daraxt va o'simliklarni aniqlash bo'yicha mutaxassissan.
-Rasmni tahlil qilib, FAQAT JSON formatida javob ber.
+        prompt = """
+Sen Greenify AI - professional o'simliklar va daraxtlar parvarishi bo'yicha mutaxassissan.
+Rasmni batafsil tahlil qilib, FAQAT JSON formatida javob ber.
 
-DARAXT DEYISH UCHUN (is_tree = true):
-✅ Har qanday daraxt: katta, kichik, yosh, qari
-✅ Ko'chat (nihollar)
-✅ Buta (kustlar)
-✅ Gullar tuproqda o'sgan
-✅ O'simlik tuproq yoki qo'ldagi idishda
-✅ Bog', hovli, ko'cha, dala, o'rmondagi o'simliklar
+DARAXT / O'SIMLIK IDENTIFIKATSIYASI:
+- Har qanday daraxt: katta, kichik, yosh, qari
+- Ko'chat (nihollar)
+- Buta (kustlar)
+- Gullar, xonaki o'simliklar, idishdagi o'simliklar
+- Bog', hovli, ko'cha, dala, ofis va xokazolardagi o'simliklar
 
-DARAXT EMAS (is_tree = false):
-❌ Elektron qurilmalar: telefon, kompyuter, televizor
-❌ Mebel: stol, stul, shkaf
-❌ Transport: mashina, velosiped
-❌ Qurilish: bino, devor (o'simliksiz)
-❌ Hayvonlar, odamlar (o'simliksiz)
-❌ Ovqat, idish-tovoq
+YETUKLIK DARAJASI (faqat vizual ko'rinish asosida, taxminiy):
+- "seedling":
+    Juda kichik, yangi ekilgan nihol yoki ko'chat.
+    Odatda balandligi taxminan 10–40 sm atrofida bo'ladi.
+    Idishdagi katta xonaki daraxtlar seedling BO'LMAYDI.
 
-HAQIQIY RASM (is_real_photo = true):
-✅ Telefon kamerasi bilan olingan
-✅ Tashqarida yoki xonada jonli o'simlik
-✅ Biroz xira yoki yorug' bo'lsa ham OK
+- "young":
+    Kichik yoki o'rta kattalikdagi daraxt/buta.
+    Shoxlari bor, lekin hali juda katta emas.
+    Xonaki daraxtlar (masalan, fikus, dratsena va boshqalar)
+    ko'pincha "young" deb baholanadi.
 
-HAQIQIY EMAS (is_real_photo = false):
-❌ Ekrandan screenshot
-❌ Qog'ozga chop etilgan rasm
-❌ Kompyuterda chizilgan rasm
-❌ AI yaratgan rasm
- 
-KO'CHAT (is_seedling = true):
+- "mature":
+    Katta, to'liq shakllangan daraxt yoki uy o'simligining juda rivojlangan varianti.
+    Agar o'simlik baland va keng shoxli ko'rinsa, ko'pincha "mature".
 
-✅ Agar daraxt yoki o'simlikning umumiy balandligi taxminan 2 metrga yaqin yoki undan past
-   (maksimal ~210 sm) ko'rinsa – is_seedling = true QIL
-✅ Ichki xonada idishda ekilgan daraxtlar ham, balandligi 2.1 m dan kichik bo'lsa,
-   is_seedling = true bo'lishi kerak
-✅ FAQAT juda katta, shiftga yetadigan yoki taxminan 2.1 metrdan BALAND daraxtlarda
-   is_seedling = false qil
-❗ Poyaning qalinligi va yoshi muhim emas, asosiy mezon – balandlik
+KO'CHAT FLAGI:
+- "is_seedling": true
+    faqat VISUAL ko'rinishidan juda kichik, yangi ekilgan ko'chat/nihol bo'lsa.
+- Aks holda "is_seedling": false.
 
-maturity qiymatlari:
-- "seedling": juda kichik, 0-30 sm
-- "young": o'sib kelayotgan, 30-150 sm
-- "mature": katta daraxt, 150+ sm
+SALOMATLIK BAHOLASH:
+- "excellent": Barcha barglar yam-yashil, sog'lom ko'rinishda
+- "healthy": Asosan yashil, mayda nuqsonlar bo'lishi mumkin
+- "stressed": Sarg'ish yoki qurish alomatlari bor
+- "critical": Ko'p sarg'ish/jigarrang barglar, jiddiy zarar
+- "dying": Deyarli qurigan, hayot belgilari juda kam
 
-❗ Eslatma:
-is_seedling va maturity alohida:
-- Daraxt balandligi 2.1 m dan past bo'lsa, maturity "young" yoki "mature"
-  bo'lsa ham is_seedling = true bo'lishi mumkin.
+TUPROQ NAMLIGI:
+- "very_dry": Tuproq juda quruq, yoriqlar bo'lishi mumkin
+- "dry": Quruq tuproq, sug'orish kerak
+- "normal": O'rtacha namlik, yaxshi holat
+- "wet": Ancha ho'l, yaqinda sug'orilgan
+- "waterlogged": Juda ho'l, suv to'lib turgan
 
-health qiymatlari:
-- "healthy": barglar yashil, sog'lom
-- "stressed": sariq barglar, so'lib qolgan
-- "critical": qurib qolgan, jiddiy zarar
-- "unknown": aniqlab bo'lmaydi
+BATAFSIL TAHLIL:
+1. O'simlikning turi va taxminiy tavsifi
+2. Barglarning rangi va sifati
+3. Poya/shoxlarning holati
+4. Tuproq va atrof muhit holati
+5. Aniq muammolar (agar sezilsa)
 
-soil_moisture qiymatlari:
-- "dry": tuproq quruq, yorilgan
-- "normal": oddiy tuproq
-- "wet": ho'l, suv bor
-- "unknown": tuproq ko'rinmaydi
+PROFESSIONAL TAVSIYALAR:
+- Hozir qanday g'amxo'rlik kerak
+- Sug'orish bo'yicha tavsiya
+- Yorug'lik va joylashuv bo'yicha tavsiya
+- Mumkin bo'lgan muammolarning oldini olish
+- Keyingi 7–14 kun uchun qisqa reja
 
-FAQAT JSON QAYTAR (boshqa matn yo'q):
+FAQAT JSON QAYTAR:
+
 {
-  "is_tree": true yoki false,
-  "is_real_photo": true yoki false,
-  "is_seedling": true yoki false,
-  "maturity": "seedling" yoki "young" yoki "mature" yoki "unknown",
-  "health": "healthy" yoki "stressed" yoki "critical" yoki "unknown",
-  "soil_moisture": "dry" yoki "normal" yoki "wet" yoki "unknown",
-  "comment": "O'zbek tilida qisqa izoh (1-2 jumla)"
-}"""
+  "is_tree": true/false,
+  "is_real_photo": true/false,
+  "is_seedling": true/false,
+  "maturity": "seedling"/"young"/"mature"/"unknown",
+  "health": "excellent"/"healthy"/"stressed"/"critical"/"dying"/"unknown",
+  "soil_moisture": "very_dry"/"dry"/"normal"/"wet"/"waterlogged"/"unknown",
+  "detailed_analysis": {
+    "plant_type": "Daraxt yoki o'simlik turi (agar aniqlansa)",
+    "leaf_condition": "Barglarning batafsil tavsifi",
+    "stem_condition": "Poyaning/shoxlarning holati",
+    "soil_condition": "Tuproq va atrofning tavsifi",
+    "problems_detected": ["Aniqlangan muammolar ro'yxati"],
+    "positive_signs": ["Ijobiy ko'rsatkichlar"]
+  },
+  "recommendations": {
+    "immediate_actions": ["Darhol qilish kerak bo'lgan ishlar"],
+    "watering_schedule": "Sug'orish rejimi tavsiyasi",
+    "lighting_needs": "Yorug'lik talablari",
+    "next_steps": ["Keyingi 1-2 hafta uchun reja"],
+    "warnings": ["Ogohlantirish va ehtiyot choralar"]
+  },
+  "comment": "Umumiy baho va asosiy xulosa (2-3 jumla)"
+}
+
+"""
 
         try:
-            self._log("OpenAI API ga so'rov yuborilmoqda...")
+            self._log("Greenify AI API ga so'rov yuborilmoqda...")
             
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -135,12 +146,12 @@ FAQAT JSON QAYTAR (boshqa matn yo'q):
                         ]
                     }
                 ],
-                max_tokens=800,
+                max_tokens=1500,
                 temperature=0.3
             )
 
             content = response.choices[0].message.content.strip()
-            self._log(f"OpenAI javob berdi (raw): {content[:200]}...")
+            self._log(f"Greenify AI javob berdi")
 
             # Clean JSON
             if content.startswith("```json"):
@@ -152,47 +163,57 @@ FAQAT JSON QAYTAR (boshqa matn yo'q):
             content = content.strip()
 
             result = json.loads(content)
-            self._log("JSON muvaffaqiyatli parse qilindi", result)
-
-            # Validate required fields
-            required = ["is_tree", "is_real_photo", "is_seedling", "maturity", "health", "soil_moisture", "comment"]
-            for field in required:
-                if field not in result:
-                    self._log(f"Maydon topilmadi, default qo'yilmoqda: {field}")
-                    if field in ["is_tree", "is_real_photo", "is_seedling"]:
-                        result[field] = False
-                    elif field == "comment":
-                        result[field] = "Ma'lumot yo'q"
-                    else:
-                        result[field] = "unknown"
-
-            # Log final result
-            self._log("=== TAHLIL NATIJASI ===")
-            self._log(f"  🌳 Daraxt: {'HA' if result['is_tree'] else 'YO`Q'}")
-            self._log(f"  📷 Haqiqiy rasm: {'HA' if result['is_real_photo'] else 'YO`Q'}")
-            self._log(f"  🌱 Ko'chat: {'HA' if result['is_seedling'] else 'YO`Q'}")
-            self._log(f"  📏 Yetuklik: {result['maturity']}")
-            self._log(f"  💚 Salomatlik: {result['health']}")
-            self._log(f"  💧 Tuproq namligi: {result['soil_moisture']}")
-            self._log(f"  💬 Izoh: {result['comment']}")
-            self._log("========================")
-
-            return result
-
-        except json.JSONDecodeError as e:
-            self._log(f"JSON parse xatosi: {e}")
-            self._log(f"Xato content: {content}")
-            return {
+            
+            # Validate and set defaults
+            defaults = {
                 "is_tree": False,
                 "is_real_photo": False,
                 "is_seedling": False,
                 "maturity": "unknown",
                 "health": "unknown",
                 "soil_moisture": "unknown",
-                "comment": "Tahlil xatosi - javob noto'g'ri formatda"
+                "detailed_analysis": {
+                    "plant_type": "Aniqlanmadi",
+                    "leaf_condition": "Ma'lumot yo'q",
+                    "stem_condition": "Ma'lumot yo'q",
+                    "soil_condition": "Ma'lumot yo'q",
+                    "problems_detected": [],
+                    "positive_signs": []
+                },
+                "recommendations": {
+                    "immediate_actions": [],
+                    "watering_schedule": "Ma'lumot yo'q",
+                    "lighting_needs": "Ma'lumot yo'q",
+                    "next_steps": [],
+                    "warnings": []
+                },
+                "comment": "Ma'lumot yo'q"
             }
+            
+            for k, v in defaults.items():
+                if k not in result:
+                    result[k] = v
+                elif isinstance(v, dict):
+                    for sub_k, sub_v in v.items():
+                        if sub_k not in result[k]:
+                            result[k][sub_k] = sub_v
+
+            self._log("=== GREENIFY AI TAHLIL NATIJASI ===")
+            self._log(f"  🌳 Daraxt: {'HA' if result['is_tree'] else 'YO`Q'}")
+            self._log(f"  📷 Haqiqiy rasm: {'HA' if result['is_real_photo'] else 'YO`Q'}")
+            self._log(f"  🌱 Ko'chat: {'HA' if result['is_seedling'] else 'YO`Q'}")
+            self._log(f"  📏 Yetuklik: {result['maturity']}")
+            self._log(f"  💚 Salomatlik: {result['health']}")
+            self._log(f"  💧 Tuproq namligi: {result['soil_moisture']}")
+            self._log("=====================================")
+
+            return result
+
+        except json.JSONDecodeError as e:
+            self._log(f"JSON parse xatosi: {e}")
+            return self._get_default_error_response("Tahlil xatosi - javob noto'g'ri formatda")
         except Exception as e:
-            self._log(f"AI xatolik: {type(e).__name__}: {e}")
+            self._log(f"Greenify AI xatolik: {type(e).__name__}: {e}")
             raise
 
     async def compare_images(
@@ -200,27 +221,41 @@ FAQAT JSON QAYTAR (boshqa matn yo'q):
         previous_image_bytes: bytes,
         current_image_bytes: bytes
     ) -> Dict:
-        """Compare two images"""
+        """
+        Compare two images with detailed change analysis
+        """
         self._log(f"Ikki rasm solishtirilmoqda")
-        self._log(f"  Oldingi rasm: {len(previous_image_bytes)} bytes")
-        self._log(f"  Yangi rasm: {len(current_image_bytes)} bytes")
         
         base64_prev = base64.b64encode(previous_image_bytes).decode('utf-8')
         base64_curr = base64.b64encode(current_image_bytes).decode('utf-8')
 
-        prompt = """Ikki rasmni solishtir va FAQAT JSON qaytar.
+        prompt = """Sen Greenify AI - professional o'simliklar mutaxassisissan.
+Ikki rasmni solishtir va batafsil tahlil ber. FAQAT JSON qaytar.
 
-Birinchi rasm - OLDINGI holat
-Ikkinchi rasm - HOZIRGI holat
+BIRINCHI RASM - OLDINGI holat
+IKKINCHI RASM - HOZIRGI holat
 
-TEKSHIR:
-1. Ikkalasida ham daraxt/o'simlik bormi?
-2. Bir xil daraxtmi yoki boshqasimi?
-3. O'zgarish bormi (o'sgan, sug'orilgan, so'ligan)?
+TEKSHIRISH:
+1. Bir xil daraxt/o'simlikmi?
+2. Qanday o'zgarishlar bo'lgan?
+3. Holat yaxshilandimi yoki yomonlashdimi?
+4. Muammolar paydo bo'ldimi?
 
 same_scene = true FAQAT agar:
-- Xuddi bir xil rasm (copy)
-- Yoki bir xil joy, bir xil burchak, bir xil vaqt (firibgarlik)
+- Xuddi bir xil rasm (nusxa)
+- Yoki aynan bir xil burchak, vaqt (firibgarlik)
+
+BATAFSIL O'ZGARISHLAR:
+- Barglar holati (rang, miqdor, sifat)
+- O'sish dinamikasi
+- Tuproq namligi o'zgarishi
+- Yangi muammolar yoki yaxshilanishlar
+- Umumiy salomatlik tendentsiyasi
+
+TAVSIYALAR:
+- Hozirgi holatni saqlab qolish uchun
+- Yomonlashuv sabablari
+- Tuzatish choralari
 
 {
   "is_tree": true/false,
@@ -228,16 +263,33 @@ same_scene = true FAQAT agar:
   "is_seedling": true/false,
   "same_scene": true/false,
   "maturity": "seedling"/"young"/"mature"/"unknown",
-  "health": "healthy"/"stressed"/"critical"/"unknown",
-  "soil_moisture": "dry"/"normal"/"wet"/"unknown",
-  "changes": "Qanday o'zgarish bo'lgan",
-  "comment": "Umumiy baho"
-}
-
-FAQAT JSON!"""
+  "health": "excellent"/"healthy"/"stressed"/"critical"/"dying"/"unknown",
+  "soil_moisture": "very_dry"/"dry"/"normal"/"wet"/"waterlogged"/"unknown",
+  "comparison": {
+    "health_change": "improved"/"worsened"/"stable"/"unknown",
+    "growth_detected": true/false,
+    "moisture_change": "increased"/"decreased"/"stable"/"unknown",
+    "new_problems": ["Yangi muammolar ro'yxati"],
+    "improvements": ["Yaxshilanishlar ro'yxati"],
+    "overall_trend": "positive"/"negative"/"neutral"
+  },
+  "detailed_changes": {
+    "leaves": "Barglardagi o'zgarishlar",
+    "stem": "Poya/novdadagi o'zgarishlar", 
+    "soil": "Tuproqdagi o'zgarishlar",
+    "environment": "Atrofdagi o'zgarishlar"
+  },
+  "recommendations": {
+    "continue_actions": ["Davom ettirish kerak bo'lgan ishlar"],
+    "new_actions": ["Yangi qilish kerak bo'lgan ishlar"],
+    "warnings": ["Ogohlantirishlar"]
+  },
+  "changes": "Qisqa o'zgarishlar xulosa",
+  "comment": "Umumiy baho va tavsiya"
+}"""
 
         try:
-            self._log("OpenAI API ga solishtirish so'rovi yuborilmoqda...")
+            self._log("Greenify AI solishtirish so'rovi yuborilmoqda...")
             
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -250,7 +302,7 @@ FAQAT JSON!"""
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/jpeg;base64,{base64_prev}", "detail": "low"}
                             },
-                            {"type": "text", "text": "YANGI RASM:"},
+                            {"type": "text", "text": "HOZIRGI RASM:"},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": f"data:image/jpeg;base64,{base64_curr}"}
@@ -259,12 +311,11 @@ FAQAT JSON!"""
                         ]
                     }
                 ],
-                max_tokens=1000,
+                max_tokens=1500,
                 temperature=0.3
             )
 
             content = response.choices[0].message.content.strip()
-            self._log(f"OpenAI javob berdi (raw): {content[:200]}...")
             
             if content.startswith("```json"):
                 content = content[7:]
@@ -275,9 +326,8 @@ FAQAT JSON!"""
             content = content.strip()
 
             result = json.loads(content)
-            self._log("JSON muvaffaqiyatli parse qilindi", result)
-
-            # Set defaults for missing fields
+            
+            # Set defaults
             defaults = {
                 "is_tree": False,
                 "is_real_photo": False,
@@ -286,40 +336,203 @@ FAQAT JSON!"""
                 "maturity": "unknown",
                 "health": "unknown",
                 "soil_moisture": "unknown",
+                "comparison": {
+                    "health_change": "unknown",
+                    "growth_detected": False,
+                    "moisture_change": "unknown",
+                    "new_problems": [],
+                    "improvements": [],
+                    "overall_trend": "neutral"
+                },
+                "detailed_changes": {
+                    "leaves": "Aniqlanmadi",
+                    "stem": "Aniqlanmadi",
+                    "soil": "Aniqlanmadi",
+                    "environment": "Aniqlanmadi"
+                },
+                "recommendations": {
+                    "continue_actions": [],
+                    "new_actions": [],
+                    "warnings": []
+                },
                 "changes": "Aniqlanmadi",
                 "comment": "Ma'lumot yo'q"
             }
-
+            
             for k, v in defaults.items():
                 if k not in result:
-                    self._log(f"Maydon topilmadi, default qo'yilmoqda: {k}")
                     result[k] = v
+                elif isinstance(v, dict):
+                    for sub_k, sub_v in v.items():
+                        if sub_k not in result[k]:
+                            result[k][sub_k] = sub_v
 
-            # Log comparison result
             self._log("=== SOLISHTIRISH NATIJASI ===")
-            self._log(f"  🌳 Daraxt: {'HA' if result['is_tree'] else 'YO`Q'}")
-            self._log(f"  📷 Haqiqiy: {'HA' if result['is_real_photo'] else 'YO`Q'}")
-            self._log(f"  🔄 Bir xil sahna: {'HA (firibgarlik!)' if result['same_scene'] else 'YO`Q'}")
-            self._log(f"  📝 O'zgarishlar: {result['changes']}")
-            self._log(f"  💬 Izoh: {result['comment']}")
-            self._log("==============================")
+            self._log(f"  Holat o'zgarishi: {result['comparison']['health_change']}")
+            self._log(f"  Umumiy tendentsiya: {result['comparison']['overall_trend']}")
+            self._log("=============================")
 
             return result
 
-        except json.JSONDecodeError as e:
-            self._log(f"JSON parse xatosi: {e}")
-            self._log(f"Xato content: {content}")
-            return {
-                "is_tree": False,
-                "is_real_photo": False,
-                "is_seedling": False,
-                "same_scene": False,
-                "maturity": "unknown",
-                "health": "unknown",
-                "soil_moisture": "unknown",
-                "changes": "Xato",
-                "comment": "Tahlil xatosi - javob noto'g'ri formatda"
-            }
         except Exception as e:
-            self._log(f"AI solishtirish xatolik: {type(e).__name__}: {e}")
+            self._log(f"Greenify AI solishtirish xatolik: {type(e).__name__}: {e}")
             raise
+
+    async def generate_care_tasks(
+        self,
+        health: str,
+        soil_moisture: str,
+        maturity: str,
+        age_days: int,
+        current_date: datetime
+    ) -> List[Dict]:
+        """
+        AI-powered task generation based on plant condition
+        Returns list of tasks with specific dates and instructions
+        """
+        self._log(f"Greenify AI vazifalar generatsiya qilinmoqda...")
+        self._log(f"  Salomatlik: {health}")
+        self._log(f"  Tuproq namligi: {soil_moisture}")
+        self._log(f"  Yetuklik: {maturity}")
+        self._log(f"  Yoshi: {age_days} kun")
+
+        prompt = f"""Sen Greenify AI - professional o'simliklar parvarishi mutaxassisissan.
+
+DARAXT HOLATI:
+- Salomatlik: {health}
+- Tuproq namligi: {soil_moisture}
+- Yetuklik: {maturity}
+- Yoshi: {age_days} kun
+- Bugungi sana: {current_date.strftime('%Y-%m-%d')}
+
+VAZIFALAR YARATISH:
+Daraxtning holatiga qarab keyingi 14 kun uchun aniq vazifalar reja qil.
+
+VAZIFA TURLARI:
+1. watering - Sug'orish
+2. photo_check - Holat tekshiruvi
+3. fertilizing - O'g'itlash
+4. pruning - Qirqish/tozalash
+5. pest_check - Zararkunandalar tekshiruvi
+6. support - Tayoqqa bog'lash
+
+HAR BIR VAZIFA UCHUN:
+- Aniq sana (YYYY-MM-DD format)
+- Vazifa turi
+- Batafsil tavsiya
+- Ball (10-50 oralig'ida, qiyinlikka qarab)
+
+QOIDALAR:
+- Juda quruq tuproq uchun tezroq sug'orish
+- Critical holatda har kuni tekshirish
+- Yosh ko'chat uchun tez-tez parvarish
+- Katta daraxt uchun kamroq lekin chuqurroq g'amxo'rlik
+
+FAQAT JSON QAYTAR:
+{
+  "tasks": [
+    {
+      "type": "watering",
+      "due_date": "2024-01-15",
+      "description": "Batafsil tavsiya (o'zbek tilida)",
+      "points": 30,
+      "priority": "high"/"medium"/"low"
+    }
+  ],
+  "general_advice": "Umumiy parvarish bo'yicha maslahat"
+}"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
+                temperature=0.4
+            )
+
+            content = response.choices[0].message.content.strip()
+            
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+
+            result = json.loads(content)
+            
+            self._log(f"  Yaratildi: {len(result.get('tasks', []))} ta vazifa")
+            
+            return result.get('tasks', [])
+
+        except Exception as e:
+            self._log(f"Greenify AI task generation xatolik: {type(e).__name__}: {e}")
+            # Fallback to default tasks
+            return self._generate_fallback_tasks(health, soil_moisture, maturity, age_days, current_date)
+
+    def _generate_fallback_tasks(
+        self,
+        health: str,
+        soil_moisture: str,
+        maturity: str,
+        age_days: int,
+        current_date: datetime
+    ) -> List[Dict]:
+        """Fallback task generation if AI fails"""
+        tasks = []
+        
+        # Watering task
+        if soil_moisture in ["very_dry", "dry"]:
+            days = 1
+        elif maturity == "seedling":
+            days = 2
+        else:
+            days = 5
+        
+        tasks.append({
+            "type": "watering",
+            "due_date": (current_date + timedelta(days=days)).strftime('%Y-%m-%d'),
+            "description": f"Daraxtni yaxshilab sug'oring. Tuproq namligini tekshiring.",
+            "points": 30,
+            "priority": "high" if soil_moisture in ["very_dry", "dry"] else "medium"
+        })
+        
+        # Photo check
+        check_days = 1 if health == "critical" else 3 if maturity == "seedling" else 7
+        tasks.append({
+            "type": "photo_check",
+            "due_date": (current_date + timedelta(days=check_days)).strftime('%Y-%m-%d'),
+            "description": "Daraxt holatini tekshiring va rasmga oling.",
+            "points": 20,
+            "priority": "high" if health == "critical" else "medium"
+        })
+        
+        return tasks
+
+    def _get_default_error_response(self, error_message: str) -> Dict:
+        """Default error response"""
+        return {
+            "is_tree": False,
+            "is_real_photo": False,
+            "is_seedling": False,
+            "maturity": "unknown",
+            "health": "unknown",
+            "soil_moisture": "unknown",
+            "detailed_analysis": {
+                "plant_type": "Aniqlanmadi",
+                "leaf_condition": "Ma'lumot yo'q",
+                "stem_condition": "Ma'lumot yo'q",
+                "soil_condition": "Ma'lumot yo'q",
+                "problems_detected": [],
+                "positive_signs": []
+            },
+            "recommendations": {
+                "immediate_actions": [],
+                "watering_schedule": "Ma'lumot yo'q",
+                "lighting_needs": "Ma'lumot yo'q",
+                "next_steps": [],
+                "warnings": []
+            },
+            "comment": error_message
+        }

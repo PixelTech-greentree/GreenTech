@@ -368,3 +368,287 @@ class ErrorResponse(BaseModel):
     error: str
     error_code: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+
+
+
+# schemas.py ga QO'SHIMCHA QILINADIGAN MODELLAR
+# Mavjud schemalar ustiga qo'shing
+
+from pydantic import BaseModel
+from typing import Optional, List, Dict
+from datetime import datetime
+
+
+# ============================================================================
+# ENHANCED AI ANALYSIS SCHEMAS
+# ============================================================================
+
+class DetailedPlantAnalysis(BaseModel):
+    """Batafsil o'simlik tahlili"""
+    plant_type: str
+    leaf_condition: str
+    stem_condition: str
+    soil_condition: str
+    problems_detected: List[str] = []
+    positive_signs: List[str] = []
+
+
+class PlantRecommendations(BaseModel):
+    """Parvarish tavsifalari"""
+    immediate_actions: List[str] = []
+    watering_schedule: str
+    lighting_needs: str
+    next_steps: List[str] = []
+    warnings: List[str] = []
+
+
+class ComparisonAnalysis(BaseModel):
+    """Taqqoslash tahlili"""
+    health_change: str  # improved, worsened, stable
+    growth_detected: bool
+    moisture_change: str  # increased, decreased, stable
+    new_problems: List[str] = []
+    improvements: List[str] = []
+    overall_trend: str  # positive, negative, neutral
+
+
+class DetailedChanges(BaseModel):
+    """Batafsil o'zgarishlar"""
+    leaves: str
+    stem: str
+    soil: str
+    environment: str
+
+
+class ChangeRecommendations(BaseModel):
+    """O'zgarish bo'yicha tavsiyalar"""
+    continue_actions: List[str] = []
+    new_actions: List[str] = []
+    warnings: List[str] = []
+
+
+class EnhancedAIAnalysis(BaseModel):
+    """Kengaytirilgan AI tahlili"""
+    is_tree: bool
+    is_real_photo: bool
+    is_seedling: bool
+    maturity: str
+    health: str
+    soil_moisture: str
+    detailed_analysis: DetailedPlantAnalysis
+    recommendations: PlantRecommendations
+    comment: str
+
+
+class EnhancedComparisonAnalysis(BaseModel):
+    """Kengaytirilgan solishtirish tahlili"""
+    is_tree: bool
+    is_real_photo: bool
+    is_seedling: bool
+    same_scene: bool
+    maturity: str
+    health: str
+    soil_moisture: str
+    comparison: ComparisonAnalysis
+    detailed_changes: DetailedChanges
+    recommendations: ChangeRecommendations
+    changes: str
+    comment: str
+
+
+# ============================================================================
+# TREE HEALTH STATUS SCHEMAS
+# ============================================================================
+
+class TreeHealthStatus(BaseModel):
+    """Daraxt salomatligi holati"""
+    tree_id: str
+    current_health: str
+    current_moisture: str
+    last_check_date: Optional[datetime]
+    days_since_planting: int
+    maturity_level: str
+    status: str  # active, needs_attention, critical
+    health_trend: str  # improving, stable, declining, unknown
+    last_ai_analysis: Optional[EnhancedAIAnalysis] = None
+
+
+class TreeHealthHistoryItem(BaseModel):
+    """Salomatlik tarixi elementi"""
+    date: datetime
+    health: str
+    moisture: str
+    photo_url: Optional[str] = None
+    ai_comment: str
+
+
+class TreeHealthHistoryResponse(BaseModel):
+    """Salomatlik tarixi javobi"""
+    tree_id: str
+    current_status: TreeHealthStatus
+    history: List[TreeHealthHistoryItem]
+    total_checks: int
+
+
+# ============================================================================
+# ENHANCED TREE DETAIL SCHEMAS
+# ============================================================================
+
+class AIGeneratedTask(BaseModel):
+    """AI tomonidan yaratilgan vazifa"""
+    type: str
+    due_date: str  # Odam tushunadigan format
+    due_date_iso: datetime
+    description: str
+    points: int
+    priority: str
+    status: str
+    source: str = "greenify_ai"
+
+
+class EnhancedTreeDetail(BaseModel):
+    """Kengaytirilgan daraxt tafsilotlari"""
+    tree_id: str
+    user_id: str
+    planted_date: datetime
+    planted_date_formatted: str  # "15 yanvar, 2024"
+    days_old: int
+    
+    # Location
+    latitude: float
+    longitude: float
+    centroid_lat: Optional[float]
+    centroid_lon: Optional[float]
+    segments: List[List[float]] = []
+    
+    # Current status
+    phase: str
+    status: str
+    maturity: str
+    current_health: str
+    current_moisture: str
+    health_trend: str
+    
+    # Photos
+    first_photo_url: Optional[str] = None
+    latest_photo_url: Optional[str] = None
+    total_photos: int
+    
+    # AI Analysis
+    last_ai_analysis: Optional[EnhancedAIAnalysis] = None
+    last_analysis_date: Optional[datetime] = None
+    
+    # Tasks
+    active_tasks: List[AIGeneratedTask]
+    completed_tasks_count: int
+    pending_tasks_count: int
+    
+    # Statistics
+    total_waterings: int
+    total_checks: int
+    care_score: int  # 0-100
+
+
+# ============================================================================
+# TASK COMPLETION WITH IMAGE SCHEMAS
+# ============================================================================
+
+class TaskCompletionRequest(BaseModel):
+    """Vazifa bajarish so'rovi (rasm bilan)"""
+    user_id: str
+    task_id: str
+    latitude: float
+    longitude: float
+    client_timestamp: str
+
+
+class TaskCompletionResponse(BaseModel):
+    """Vazifa bajarish javobi"""
+    success: bool
+    message: str
+    task_id: str
+    points_earned: int
+    total_points: int
+    ai_feedback: Optional[EnhancedAIAnalysis] = None
+    next_tasks: List[AIGeneratedTask] = []
+
+
+# ============================================================================
+# RATING SCHEMAS (ENHANCED)
+# ============================================================================
+
+class EnhancedLeaderboardItem(BaseModel):
+    """Kengaytirilgan lider taxtasi elementi"""
+    rank: int
+    user_id: str
+    full_name: str
+    avatar_url: Optional[str] = None
+    total_points: int
+    tasks_completed: int
+    trees_planted: int
+    active_trees: int
+    care_score: float  # O'rtacha g'amxo'rlik bahosi
+    last_activity: Optional[datetime] = None
+
+
+class LeaderboardResponse(BaseModel):
+    """Lider taxtasi javobi"""
+    period: str  # "7kun", "30kun", "Barcha vaqt"
+    period_start: Optional[datetime] = None
+    period_end: datetime
+    total_users: int
+    leaders: List[EnhancedLeaderboardItem]
+
+
+# ============================================================================
+# STATISTICS SCHEMAS
+# ============================================================================
+
+class GlobalStatisticsResponse(BaseModel):
+    """Global statistika"""
+    total_trees_planted: int
+    total_active_trees: int
+    total_users: int
+    total_tasks_completed: int
+    total_waterings: int
+    average_tree_health: float
+    trees_by_status: Dict[str, int]
+    trees_by_maturity: Dict[str, int]
+    recent_plantings_7days: int
+    recent_plantings_30days: int
+
+
+# ============================================================================
+# NEARBY TASKS (ENHANCED)
+# ============================================================================
+
+class EnhancedNearbyTaskItem(BaseModel):
+    """Kengaytirilgan yaqin vazifa"""
+    task_id: str
+    tree_id: str
+    tree_owner_name: str
+    task_type: str
+    task_description: str
+    priority: str
+    due_date: datetime
+    due_date_formatted: str  # "Bugun 18:00" yoki "Ertaga" yoki "3 kun ichida"
+    time_remaining: str  # "2 soat 15 daqiqa"
+    is_urgent: bool
+    
+    # Location
+    tree_latitude: float
+    tree_longitude: float
+    distance_meters: float
+    distance_formatted: str  # "120 metr" yoki "1.5 km"
+    
+    # Rewards
+    points_reward: int
+    current_status: str
+    can_claim: bool
+    claimed_by: Optional[str] = None
+    claim_expires_at: Optional[datetime] = None
+    
+    # Tree info
+    tree_health: str
+    tree_maturity: str
+    requires_photo: bool = True

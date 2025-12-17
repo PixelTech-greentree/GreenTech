@@ -485,5 +485,470 @@ async def legacy_nearby_trees(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+# main.py ga QO'SHILISHI KERAK BO'LGAN YANGI ENDPOINTLAR
+# Mavjud endpointlar bilan birga ishlaydi
+
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timedelta
+import locale
+
+# Import yangi servislar
+from services.tree_health_service import TreeHealthService
+from services.enhanced_task_service import EnhancedTaskService
+
+
+# ============================================================================
+# 1. TREE HEALTH STATUS API
+# ============================================================================
+
+@app.get("/api/v1/trees/{tree_id}/health", tags=["Tree Health"])
+async def get_tree_health_status(
+    tree_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Daraxt salomatlik holati va tarixini olish
+    
+    Qaytaradi:
+    - Joriy salomatlik holati
+    - Namlik darajasi
+    - Oxirgi AI tahlili
+    - Salomatlik tendentsiyasi
+    - Tarix (oxirgi 10 ta tekshiruv)
+    
+    Misol:
+    GET /api/v1/trees/abc123/health
+    """
+    try:
+        service = TreeHealthService(db)
+        health_data = await service.get_tree_health_status(tree_id)
+        
+        if not health_data:
+            raise HTTPException(status_code=404, detail="Daraxt topilmadi")
+        
+        return {
+            "success": True,
+            "data": health_data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/trees/{tree_id}/health/history", tags=["Tree Health"])
+async def get_tree_health_history(
+    tree_id: str,
+    limit: int = Query(20, ge=1, le=100, description="Nechta yozuv"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Daraxt salomatlik tarixini olish
+    
+    Qaytaradi oxirgi N ta tekshiruvni chronologic tartibda
+    
+    Misol:
+    GET /api/v1/trees/abc123/health/history?limit=30
+    """
+    try:
+        service = TreeHealthService(db)
+        history = await service.get_health_history(tree_id, limit)
+        
+        return {
+            "success": True,
+            "tree_id": tree_id,
+            "total": len(history),
+            "history": history
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 2. ENHANCED TREE DETAILS API
+# ============================================================================
+
+@app.get("/api/v1/trees/{tree_id}/full", tags=["Trees"])
+async def get_full_tree_details(
+    tree_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Daraxt to'liq ma'lumotlari (barcha detallar)
+    
+    Qaytaradi:
+    - Asosiy ma'lumotlar (ekilgan sana, joy, rasm)
+    - Joriy holat (salomatlik, namlik, yetuklik)
+    - Oxirgi AI tahlili (batafsil)
+    - Barcha vazifalar (active, completed)
+    - Statistika (sug'orish, tekshiruvlar)
+    - Rasmlar tarixi
+    
+    Bu endpoint barcha kerakli ma'lumotlarni bitta so'rovda beradi!
+    
+    Misol:
+    GET /api/v1/trees/abc123/full
+    """
+    try:
+        service = TreeHealthService(db)
+        details = await service.get_full_tree_details(tree_id)
+        
+        if not details:
+            raise HTTPException(status_code=404, detail="Daraxt topilmadi")
+        
+        return {
+            "success": True,
+            "tree": details
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 3. TASK COMPLETION WITH IMAGE (MANDATORY)
+# ============================================================================
+
+@app.post("/api/v1/tasks/{task_id}/complete", tags=["Tasks"])
+async def complete_task_with_image(
+    task_id: str,
+    user_id: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    client_timestamp: str = Form(...),
+    image: UploadFile = File(..., description="Vazifa uchun rasm MAJBURIY"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Vazifani rasm bilan bajarish (RASM MAJBURIY!)
+    
+    Har qanday vazifa turi uchun rasm yuborish shart:
+    - watering: Sug'orilgan daraxt rasmi
+    - photo_check: Daraxt holati rasmi
+    - fertilizing: O'g'itlangan joy rasmi
+    - pruning: Qirqilgan/tozalangan rasm
+    - pest_check: Zararkunandalar tekshiruv rasmi
+    
+    AI rasm orqali:
+    1. Vazifa to'g'ri bajarilganini tekshiradi
+    2. Daraxt holatini tahlil qiladi
+    3. Batafsil feedback beradi
+    4. Keyingi vazifalarni yaratadi
+    
+    Misol:
+    POST /api/v1/tasks/task123/complete
+    Form data:
+    - user_id: user123
+    - latitude: 41.2995
+    - longitude: 69.2401
+    - client_timestamp: 2024-01-15T10:30:00
+    - image: [FILE]
+    """
+    try:
+        service = EnhancedTaskService(db)
+        result = await service.complete_task_with_validation(
+            task_id=task_id,
+            user_id=user_id,
+            latitude=latitude,
+            longitude=longitude,
+            client_timestamp=client_timestamp,
+            image_file=image
+        )
+        
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server xatosi: {str(e)}")
+
+
+# ============================================================================
+# 4. NEARBY TASKS (ENHANCED WITH TIME FORMATTING)
+# ============================================================================
+
+@app.get("/api/v1/tasks/nearby/enhanced", tags=["Tasks"])
+async def get_nearby_tasks_enhanced(
+    user_id: str = Query(...),
+    latitude: float = Query(...),
+    longitude: float = Query(...),
+    radius_km: float = Query(2.0, ge=0.5, le=10.0),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Yaqin atrofdagi vazifalar (kengaytirilgan)
+    
+    Farqi:
+    - Vaqt odam tushunadigan formatda ("2 soat 30 daqiqa")
+    - Masofa o'zbek tilida ("1.5 km" yoki "250 metr")
+    - Daraxt egasining ismi
+    - Vazifa batafsil tavsifi
+    - Band qilish imkoniyati va muddat
+    
+    Faqat vaqti kelgan yoki yaqinlashgan vazifalar ko'rsatiladi!
+    Vaqti kelmagan vazifalarni band qilib bo'lmaydi.
+    
+    Misol:
+    GET /api/v1/tasks/nearby/enhanced?user_id=user123&latitude=41.2995&longitude=69.2401&radius_km=2
+    """
+    try:
+        service = EnhancedTaskService(db)
+        tasks = await service.get_nearby_tasks_enhanced(
+            user_id=user_id,
+            latitude=latitude,
+            longitude=longitude,
+            radius_km=radius_km
+        )
+        
+        return {
+            "success": True,
+            "user_location": {"lat": latitude, "lon": longitude},
+            "radius_km": radius_km,
+            "total": len(tasks),
+            "available_tasks": tasks
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/tasks/{task_id}/claim/enhanced", tags=["Tasks"])
+async def claim_task_enhanced(
+    task_id: str,
+    user_id: str = Query(..., description="User ID"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Vazifani band qilish (kengaytirilgan)
+    
+    Shartlar:
+    - Vazifa vaqti kelgan bo'lishi kerak (yoki 24 soat ichida)
+    - Boshqa user band qilmagan bo'lishi kerak
+    - Band qilgandan keyin 30 daqiqa ichida bajarish shart
+    - Aks holda -30 ball jarima va vazifa bo'shaydi
+    
+    Misol:
+    POST /api/v1/tasks/task123/claim/enhanced?user_id=user123
+    """
+    try:
+        service = EnhancedTaskService(db)
+        result = await service.claim_task_enhanced(task_id, user_id)
+        
+        if not result['success']:
+            raise HTTPException(status_code=400, detail=result['message'])
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 5. GLOBAL STATISTICS
+# ============================================================================
+
+@app.get("/api/v1/statistics/global", tags=["Statistics"])
+async def get_global_statistics(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Global tizim statistikasi
+    
+    Qaytaradi:
+    - Jami ekilgan daraxtlar soni
+    - Faol daraxtlar soni
+    - Jami foydalanuvchilar
+    - Bajarilgan vazifalar
+    - O'rtacha daraxt salomatligi
+    - Holat bo'yicha taqsimlash
+    - Oxirgi 7 va 30 kundagi ekinlar
+    
+    Misol:
+    GET /api/v1/statistics/global
+    """
+    try:
+        from services.statistics_service import StatisticsService
+        service = StatisticsService(db)
+        stats = await service.get_global_statistics()
+        
+        return {
+            "success": True,
+            "statistics": stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 6. RATING / LEADERBOARD (ENHANCED)
+# ============================================================================
+
+@app.get("/api/v1/rating/leaderboard", tags=["Rating"])
+async def get_enhanced_leaderboard(
+    period: str = Query("7days", regex="^(7days|30days|all_time)$"),
+    limit: int = Query(50, ge=10, le=200),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Lider taxtasi (kengaytirilgan)
+    
+    Parametrlar:
+    - period: "7days" (7 kun), "30days" (30 kun), "all_time" (Barcha vaqt)
+    - limit: Ko'rsatiladigan foydalanuvchilar soni (10-200)
+    
+    Qaytaradi har bir user uchun:
+    - Joylanish (rank)
+    - Umumiy ballari
+    - Bajarilgan vazifalar
+    - Ekilgan daraxtlar
+    - G'amxo'rlik bahosi (0-100)
+    - Oxirgi faollik
+    
+    O'zbek tilida vaqt ko'rsatiladi: "7 kun", "30 kun", "Barcha vaqt"
+    
+    Misol:
+    GET /api/v1/rating/leaderboard?period=7days&limit=100
+    """
+    try:
+        from services.rating_enhanced_service import RatingEnhancedService
+        service = RatingEnhancedService(db)
+        
+        period_map = {
+            "7days": ("7 kun", 7),
+            "30days": ("30 kun", 30),
+            "all_time": ("Barcha vaqt", None)
+        }
+        
+        period_label, days = period_map[period]
+        leaderboard = await service.get_enhanced_leaderboard(days, limit)
+        
+        return {
+            "success": True,
+            "period": period_label,
+            "period_start": (datetime.utcnow() - timedelta(days=days)).isoformat() if days else None,
+            "period_end": datetime.utcnow().isoformat(),
+            "total_shown": len(leaderboard),
+            "leaderboard": leaderboard
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 7. USER'S OWN TREES WITH FULL DETAILS
+# ============================================================================
+
+@app.get("/api/v1/users/{user_id}/trees/detailed", tags=["My Trees"])
+async def get_user_trees_detailed(
+    user_id: str,
+    include_completed: bool = Query(False, description="Tugatilgan vazifalarni qo'shish"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Foydalanuvchi daraxtlari (batafsil)
+    
+    Har bir daraxt uchun:
+    - Asosiy ma'lumotlar va rasm
+    - Joriy holat va salomatlik
+    - Active vazifalar (vaqt bilan)
+    - Oxirgi AI tahlili
+    - Statistika
+    
+    Bu endpoint mobile app uchun moslashtirilgan:
+    - Vaqtlar odam tushunadigan ("3 kun oldin")
+    - Rasmlar URL bilan
+    - Vazifalar uchun countdown
+    
+    Misol:
+    GET /api/v1/users/user123/trees/detailed
+    """
+    try:
+        service = TreeHealthService(db)
+        trees = await service.get_user_trees_detailed(user_id, include_completed)
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "total_trees": len(trees),
+            "trees": trees
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# HELPER FUNCTIONS FOR TIME FORMATTING
+# ============================================================================
+
+def format_relative_time(target_date: datetime) -> str:
+    """
+    Vaqtni o'zbek tilida formatlash
+    
+    Misol:
+    - "2 daqiqa ichida"
+    - "1 soat 15 daqiqa ichida"
+    - "Bugun 18:00"
+    - "Ertaga"
+    - "3 kun ichida"
+    - "2 hafta oldin"
+    """
+    now = datetime.utcnow()
+    delta = target_date - now
+    
+    if delta.total_seconds() < 0:
+        # O'tgan vaqt
+        delta = -delta
+        if delta.days > 30:
+            months = delta.days // 30
+            return f"{months} oy oldin"
+        elif delta.days > 0:
+            return f"{delta.days} kun oldin"
+        elif delta.seconds >= 3600:
+            hours = delta.seconds // 3600
+            return f"{hours} soat oldin"
+        elif delta.seconds >= 60:
+            minutes = delta.seconds // 60
+            return f"{minutes} daqiqa oldin"
+        else:
+            return "Hozir"
+    else:
+        # Kelajak vaqt
+        if delta.days > 30:
+            months = delta.days // 30
+            return f"{months} oy ichida"
+        elif delta.days > 1:
+            return f"{delta.days} kun ichida"
+        elif delta.days == 1:
+            return f"Ertaga {target_date.strftime('%H:%M')}"
+        elif delta.seconds >= 3600:
+            hours = delta.seconds // 3600
+            minutes = (delta.seconds % 3600) // 60
+            if minutes > 0:
+                return f"{hours} soat {minutes} daqiqa ichida"
+            return f"{hours} soat ichida"
+        elif delta.seconds >= 60:
+            minutes = delta.seconds // 60
+            return f"{minutes} daqiqa ichida"
+        else:
+            return "Darhol"
+
+
+def format_distance(meters: float) -> str:
+    """
+    Masofani o'zbek tilida formatlash
+    
+    Misol:
+    - "50 metr"
+    - "1.2 km"
+    """
+    if meters < 1000:
+        return f"{int(meters)} metr"
+    else:
+        km = meters / 1000
+        return f"{km:.1f} km"
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5512, reload=True)
