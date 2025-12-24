@@ -208,3 +208,63 @@ class _TaskCompletionSheetState extends State<_TaskCompletionSheet> {
     ]));
   }
 }
+class TasksScreenContent extends StatelessWidget {
+  const TasksScreenContent({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        return DefaultTabController(
+          length: 2,
+          child: Column(
+            children: [
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 20),
+                decoration: BoxDecoration(
+                  color: AppColors.cardBackground,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: TabBar(  // ✅ const olib tashlandi
+                  indicator: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: const [  // ✅ Faqat bu yerda const qoldi
+                      BoxShadow(
+                        color: Colors.black12,
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  indicatorSize: TabBarIndicatorSize.tab,
+                  indicatorPadding: const EdgeInsets.all(4),
+                  labelColor: AppColors.primaryGreen,
+                  unselectedLabelColor: AppColors.textMedium,
+                  labelStyle: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  dividerColor: Colors.transparent,
+                  tabs: const [
+                    Tab(text: '🌱 Daraxtlarim'),
+                    Tab(text: '📋 Vazifalar'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _MyTreesTab(onRefresh: () => appState.loadUserTrees()),
+                    _NearbyTasksTab(onRefresh: () => appState.loadNearbyTasks()),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

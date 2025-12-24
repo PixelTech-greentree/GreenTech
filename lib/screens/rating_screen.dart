@@ -99,3 +99,140 @@ class _RankCard extends StatelessWidget {
     );
   }
 }
+
+
+class RatingScreenContent extends StatefulWidget {
+  const RatingScreenContent({super.key});
+  @override
+  State<RatingScreenContent> createState() => _RatingScreenContentState();
+}
+
+class _RatingScreenContentState extends State<RatingScreenContent> {
+  String _selectedRange = '7days';
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRating();
+  }
+
+  Future<void> _loadRating() async {
+    setState(() => _isLoading = true);
+    await context.read<AppState>().loadRating(period: _selectedRange);
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  void _onRangeChanged(String range) {
+    setState(() => _selectedRange = range);
+    _loadRating();
+  }
+
+  String _getRangeLabel(String range) {
+    switch (range) {
+      case '7days':
+        return '7 kun';
+      case '30days':
+        return '30 kun';
+      case 'all_time':
+        return 'Barchasi';
+      default:
+        return range;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        return Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: AppColors.cardBackground,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                children: ['7days', '30days', 'all_time'].map((range) {
+                  final isSelected = _selectedRange == range;
+                  return Expanded(
+                    child: GestureDetector(
+                      onTap: () => _onRangeChanged(range),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isSelected ? Colors.white : Colors.transparent,
+                          borderRadius: BorderRadius.circular(10),
+                          boxShadow: isSelected
+                              ? [
+                                  const BoxShadow(
+                                    color: Colors.black12,
+                                    blurRadius: 8,
+                                    offset: Offset(0, 2),
+                                  ),
+                                ]
+                              : null,
+                        ),
+                        child: Text(
+                          _getRangeLabel(range),
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                            color: isSelected ? AppColors.primaryGreen : AppColors.textMedium,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Expanded(
+              child: _isLoading
+                  ? const Center(
+                      child: CircularProgressIndicator(color: AppColors.primaryGreen),
+                    )
+                  : appState.ratingUsers.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text('🏆', style: TextStyle(fontSize: 64)),
+                              SizedBox(height: 16),
+                              Text(
+                                'Reyting bo\'sh',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.textMedium,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: _loadRating,
+                          child: ListView.builder(
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
+                            itemCount: appState.ratingUsers.length,
+                            itemBuilder: (context, index) {
+                              final user = appState.ratingUsers[index];
+                              final isCurrentUser = user.id == appState.userId;
+                              return _RankCard(user: user, isCurrentUser: isCurrentUser)
+                                  .animate()
+                                  .fadeIn(delay: Duration(milliseconds: 50 * index));
+                            },
+                          ),
+                        ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}

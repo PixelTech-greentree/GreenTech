@@ -2,13 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';  // ← Qo'shing
+import 'package:intl/intl.dart';  // ← Qo'shing
+import 'package:intl/date_symbol_data_local.dart';  // ← Qo'shing
 import 'services/api_service.dart';
 import 'services/app_state.dart';
+import 'services/shop_state.dart';
 import 'utils/app_colors.dart';
 import 'screens/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // ✅ O'zbek tilini initialize qilish (APK'da ham ishlaydi)
+  await initializeDateFormatting('uz_UZ', null);
+  Intl.defaultLocale = 'uz_UZ';
   
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -19,8 +27,11 @@ void main() async {
   await api.loadFromStorage();
 
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => AppState(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AppState()),
+        ChangeNotifierProvider(create: (_) => ShopState()),
+      ],
       child: const GreenifyApp(),
     ),
   );
@@ -34,6 +45,20 @@ class GreenifyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Greenify',
       debugShowCheckedModeBanner: false,
+      
+      // ✅ Localization sozlamalari (APK uchun muhim)
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('uz', 'UZ'),  // O'zbek tili
+        Locale('ru', 'RU'),  // Rus tili (ixtiyoriy)
+        Locale('en', 'US'),  // Ingliz tili (fallback)
+      ],
+      locale: const Locale('uz', 'UZ'),  // Default til
+      
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
