@@ -1,5 +1,6 @@
 """
 Enhanced Task Service - AI-driven task management with image validation
+Fixed: claim endpoint, location tolerance
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
@@ -18,7 +19,6 @@ class EnhancedTaskService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.ai_service = AIService()
-        self.checkin_service = CheckInService(db)
     
     async def get_nearby_tasks_enhanced(
         self,
@@ -33,8 +33,8 @@ class EnhancedTaskService:
         """
         now = datetime.utcnow()
         
-        # Faqat 24 soat ichidagi vazifalar
-        time_window = now + timedelta(hours=24)
+        # 48 soat ichidagi vazifalar (oldin 24 edi)
+        time_window = now + timedelta(hours=48)
         
         # Barcha pending va claimed vazifalar
         query = (
@@ -63,10 +63,10 @@ class EnhancedTaskService:
                 # Foydalanuvchi o'z daraxtimi?
                 is_own = (tree.user_id == user_id)
                 
-                # Band qilish imkoniyati
+                # Band qilish imkoniyati - 48 soat ichida
                 can_claim = (
                     task.status == 'pending' and
-                    task.due_date <= now + timedelta(hours=24)
+                    task.due_date <= now + timedelta(hours=48)
                 )
                 
                 # Vaqt formati
@@ -99,7 +99,7 @@ class EnhancedTaskService:
                     "current_status": task.status,
                     "can_claim": can_claim,
                     "claimed_by": task.assigned_user_id,
-                    "claim_expires_at": task.claimed_at + timedelta(minutes=30) if task.claimed_at else None,
+                    "claim_expires_at": task.claimed_at + timedelta(minutes=60) if task.claimed_at else None,
                     
                     "tree_health": tree.last_health or "unknown",
                     "tree_maturity": tree.phase,
@@ -123,27 +123,41 @@ class EnhancedTaskService:
         if not task:
             return {"success": False, "message": "Vazifa topilmadi"}
         
-        # Vaqt tekshiruvi
+        # Vaqt tekshiruvi - 48 soat ichida bo'lishi kerak
         now = datetime.utcnow()
-        if task.due_date > now + timedelta(hours=24):
-            time_until = self._format_time_remaining(task.due_date - timedelta(hours=24))
+        if task.due_date > now + timedelta(hours=48):
+            time_until = self._format_time_remaining(task.due_date - timedelta(hours=48))
             return {
                 "success": False,
                 "message": f"Vazifani band qilish uchun yana {time_until} kutish kerak"
             }
         
         # Status tekshiruvi
-        if task.status != 'pending':
-            if task.status == 'claimed' and task.assigned_user_id == user_id:
+        if task.status == 'completed':
+            return {
+                "success": False,
+                "message": "Bu vazifa allaqachon bajarilgan"
+            }
+        
+        if task.status == 'claimed':
+            if task.assigned_user_id == user_id:
                 return {
                     "success": False,
                     "message": "Siz bu vazifani allaqachon band qilgansiz"
                 }
             else:
-                return {
-                    "success": False,
-                    "message": "Bu vazifa allaqachon band qilingan yoki tugallangan"
-                }
+                # Boshqa user band qilgan - vaqti o'tganmi?
+                if task.claimed_at and now > task.claimed_at + timedelta(minutes=60):
+                    # Vaqti o'tdi - bo'shatamiz
+                    task.status = 'pending'
+                    task.assigned_user_id = None
+                    task.claimed_at = None
+                    await self.db.commit()
+                else:
+                    return {
+                        "success": False,
+                        "message": "Bu vazifa boshqa foydalanuvchi tomonidan band qilingan"
+                    }
         
         # Band qilish
         task.status = 'claimed'
@@ -153,14 +167,14 @@ class EnhancedTaskService:
         await self.db.commit()
         await self.db.refresh(task)
         
-        expires_at = now + timedelta(minutes=30)
+        expires_at = now + timedelta(minutes=60)
         
         return {
             "success": True,
-            "message": "Vazifa band qilindi! 30 daqiqa ichida rasmga olib yuboring.",
+            "message": "Vazifa band qilindi! 60 daqiqa ichida rasmga olib yuboring.",
             "task_id": task_id,
             "expires_at": expires_at.isoformat(),
-            "time_remaining": "30 daqiqa"
+            "time_remaining": "60 daqiqa"
         }
     
     async def complete_task_with_validation(
@@ -175,6 +189,9 @@ class EnhancedTaskService:
         """
         Vazifani rasm bilan bajarish va AI validatsiya
         """
+        # Lazy import to avoid circular dependency
+        from services.checkin_service import CheckInService
+        
         # Vazifani olish
         task_q = select(Task, Tree).join(Tree, Task.tree_id == Tree.id).where(Task.id == task_id)
         task_r = await self.db.execute(task_q)
@@ -192,10 +209,10 @@ class EnhancedTaskService:
         if task.status == 'claimed' and task.assigned_user_id != user_id:
             raise ValueError("Bu vazifa boshqa foydalanuvchi tomonidan band qilingan")
         
-        # Vaqt tekshiruvi
+        # Vaqt tekshiruvi - 60 daqiqaga o'zgardi
         now = datetime.utcnow()
         if task.status == 'claimed' and task.claimed_at:
-            if now > task.claimed_at + timedelta(minutes=30):
+            if now > task.claimed_at + timedelta(minutes=60):
                 # Jarima
                 user = await self._get_user(user_id)
                 user.total_points -= 30
@@ -217,15 +234,17 @@ class EnhancedTaskService:
                 
                 return {
                     "success": False,
-                    "message": "30 daqiqa muddati o'tdi. -30 ball jarima.",
+                    "message": "60 daqiqa muddati o'tdi. -30 ball jarima.",
                     "task_id": task_id,
                     "points_earned": -30,
                     "total_points": user.total_points
                 }
         
         # CheckIn service orqali rasm tahlili
+        checkin_service = CheckInService(self.db)
+        
         try:
-            checkin_result = await self.checkin_service.process_checkin(
+            checkin_result = await checkin_service.process_checkin(
                 user_id=user_id,
                 tree_id=tree.id,
                 task_id=task_id,
@@ -280,7 +299,8 @@ class EnhancedTaskService:
                 soil_moisture=last_moisture,
                 maturity=tree.phase,
                 age_days=age_days,
-                current_date=now
+                current_date=now,
+                plant_type=tree.phase
             )
             
             # Database ga saqlash
@@ -318,7 +338,6 @@ class EnhancedTaskService:
             
         except Exception as e:
             print(f"AI task generation failed: {e}")
-            # Fallback: oddiy tasklar
             return []
     
     # Helper methods
@@ -392,11 +411,12 @@ class EnhancedTaskService:
     def _get_task_description(self, task_type: str) -> str:
         """Task tavsifi"""
         descriptions = {
-            "watering": "Daraxtni yaxshilab sug'oring va tuproq namligini tekshiring",
-            "photo_check": "Daraxt holatini tekshiring va rasmga oling",
+            "watering": "O'simlikni yaxshilab sug'oring va rasmga oling",
+            "photo_check": "O'simlik holatini tekshiring va rasmga oling",
             "fertilizing": "O'g'itlang va tuproqni boyiting",
             "pruning": "Qurib qolgan barglarni olib tashlang",
             "pest_check": "Zararkunandalar borligini tekshiring",
+            "repotting": "Kerak bo'lsa qayta eking",
             "support": "Qiyshaygan bo'lsa tayoqqa bog'lang"
         }
         return descriptions.get(task_type, "Vazifani bajaring")

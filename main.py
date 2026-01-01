@@ -2,12 +2,13 @@
 GreenTech Backend - Complete System with Combined Trees (DB + Satellite)
 Port: 5512
 Database: PostgreSQL (Async)
+FIXED: Task claim endpoint, location tolerance, plant detection
 """
 from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import uvicorn
 
 from database import get_db, init_db
@@ -17,11 +18,13 @@ from services.checkin_service import CheckInService
 from services.task_service import TaskService
 from services.rating_service import RatingService
 from services.nearby_trees_service import NearbyTreesService
+from services.tree_health_service import TreeHealthService
+from services.enhanced_task_service import EnhancedTaskService
 
 app = FastAPI(
     title="GreenTech Complete API",
-    version="6.0.0",
-    description="Full backend with combined user-planted and satellite trees",
+    version="7.0.0",
+    description="Full backend with combined user-planted and satellite trees - FIXED",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -42,6 +45,9 @@ async def startup():
     await init_db()
     print("✅ Database initialized on port 5512")
     print("✅ Nearby Trees Service ready (DB + Satellite)")
+    print("✅ GPT-4.5 Preview model enabled")
+    print("✅ Plant/flower/houseplant detection improved")
+    print("✅ Location tolerance increased (150-250m)")
 
 
 @app.get("/")
@@ -49,9 +55,23 @@ async def root():
     return {
         "status": "ok",
         "service": "GreenTech Complete API",
-        "version": "6.0.0",
+        "version": "7.0.0",
         "port": 5512,
-        "features": ["auth", "checkins", "tasks", "rating", "combined_nearby_trees"]
+        "features": [
+            "auth", 
+            "checkins", 
+            "tasks", 
+            "rating", 
+            "combined_nearby_trees",
+            "houseplant_support",
+            "gpt-4.5-preview"
+        ],
+        "improvements": [
+            "Relaxed location tolerance (150-250m)",
+            "Houseplant and flower support",
+            "GPT-4.5 Preview model",
+            "Fixed task claim endpoint"
+        ]
     }
 
 
@@ -157,7 +177,7 @@ async def analyze_checkin(
 
 
 # ============================================================================
-# NEARBY TREES - COMBINED (DB + SATELLITE) - YANGI!
+# NEARBY TREES - COMBINED (DB + SATELLITE)
 # ============================================================================
 
 @app.get("/api/v1/trees/nearby", tags=["Trees"])
@@ -170,17 +190,7 @@ async def get_nearby_trees(
     include_user_planted: bool = Query(True, description="Include user-planted trees"),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get nearby trees from BOTH sources:
-    - User-planted trees (from database)
-    - Satellite-detected trees (from JSON)
-    
-    Returns trees sorted by distance (closest first)
-    
-    Response includes 'source' field:
-    - "user_planted" = foydalanuvchi ekgan daraxt
-    - "satellite" = sun'iy yo'ldoshdan aniqlangan
-    """
+    """Get nearby trees from BOTH sources"""
     try:
         service = NearbyTreesService(db=db)
         
@@ -213,13 +223,7 @@ async def get_tree_details(
     tree_id: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get detailed information about a specific tree
-    
-    Works for both:
-    - User-planted trees (UUID format)
-    - Satellite trees (sat_* format)
-    """
+    """Get detailed information about a specific tree"""
     try:
         service = NearbyTreesService(db=db)
         tree = await service.get_tree_details(tree_id)
@@ -227,10 +231,7 @@ async def get_tree_details(
         if not tree:
             raise HTTPException(status_code=404, detail="Tree not found")
         
-        return {
-            "success": True,
-            "tree": tree
-        }
+        return {"success": True, "tree": tree}
     except HTTPException:
         raise
     except Exception as e:
@@ -239,40 +240,26 @@ async def get_tree_details(
 
 @app.get("/api/v1/trees/bounds", tags=["Trees"])
 async def get_trees_in_bounds(
-    north: float = Query(..., description="Northern boundary"),
-    south: float = Query(..., description="Southern boundary"),
-    east: float = Query(..., description="Eastern boundary"),
-    west: float = Query(..., description="Western boundary"),
+    north: float = Query(...),
+    south: float = Query(...),
+    east: float = Query(...),
+    west: float = Query(...),
     include_satellite: bool = Query(True),
     include_user_planted: bool = Query(True),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Get all trees within a bounding box
-    
-    Useful for map view rendering - returns all trees in viewport
-    """
+    """Get all trees within a bounding box"""
     try:
         service = NearbyTreesService(db=db)
-        
         trees = await service.get_trees_in_bounds(
-            north=north,
-            south=south,
-            east=east,
-            west=west,
+            north=north, south=south, east=east, west=west,
             include_satellite=include_satellite,
             include_user_planted=include_user_planted
         )
-        
         return {
             "success": True,
             "count": len(trees),
-            "bounds": {
-                "north": north,
-                "south": south,
-                "east": east,
-                "west": west
-            },
+            "bounds": {"north": north, "south": south, "east": east, "west": west},
             "trees": trees
         }
     except Exception as e:
@@ -280,25 +267,12 @@ async def get_trees_in_bounds(
 
 
 @app.get("/api/v1/trees/statistics", tags=["Trees"])
-async def get_tree_statistics(
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get statistics about all trees in the system
-    
-    Shows counts for:
-    - User-planted trees (from database)
-    - Satellite trees (from JSON)
-    - Total trees
-    """
+async def get_tree_statistics(db: AsyncSession = Depends(get_db)):
+    """Get statistics about all trees"""
     try:
         service = NearbyTreesService(db=db)
         stats = await service.get_statistics()
-        
-        return {
-            "success": True,
-            "statistics": stats
-        }
+        return {"success": True, "statistics": stats}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -313,16 +287,13 @@ async def get_nearby_tasks(
     db: AsyncSession = Depends(get_db)
 ):
     task_service = TaskService(db)
-
     try:
         await task_service.release_expired_reservations()
-
         tasks = await task_service.get_nearby_tasks(
             user_id=request.user_id,
             latitude=request.latitude,
             longitude=request.longitude
         )
-
         return NearbyTasksResponse(
             user_id=request.user_id,
             now=datetime.utcnow().isoformat(),
@@ -338,23 +309,15 @@ async def claim_task(
     db: AsyncSession = Depends(get_db)
 ):
     task_service = TaskService(db)
-
     try:
         await task_service.release_expired_reservations()
-
         success, message, task = await task_service.claim_task(
             user_id=request.user_id,
             task_id=request.task_id
         )
-
         if not success:
             raise HTTPException(status_code=400, detail=message)
-
-        return TaskClaimResponse(
-            success=True,
-            message=message,
-            task=task
-        )
+        return TaskClaimResponse(success=True, message=message, task=task)
     except HTTPException:
         raise
     except Exception as e:
@@ -366,36 +329,22 @@ async def claim_task(
 # ============================================================================
 
 @app.get("/api/v1/users/{user_id}/trees", response_model=MyTreesResponse, tags=["My Trees"])
-async def get_my_trees(
-    user_id: str,
-    db: AsyncSession = Depends(get_db)
-):
+async def get_my_trees(user_id: str, db: AsyncSession = Depends(get_db)):
     task_service = TaskService(db)
-
     try:
         trees = await task_service.get_user_trees_with_tasks(user_id)
-
-        return MyTreesResponse(
-            user_id=user_id,
-            trees=trees
-        )
+        return MyTreesResponse(user_id=user_id, trees=trees)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/trees/{tree_id}", response_model=TreeDetailResponse, tags=["My Trees"])
-async def get_tree_detail(
-    tree_id: str,
-    db: AsyncSession = Depends(get_db)
-):
+async def get_tree_detail(tree_id: str, db: AsyncSession = Depends(get_db)):
     task_service = TaskService(db)
-
     try:
         tree_detail = await task_service.get_tree_detail(tree_id)
-
         if not tree_detail:
             raise HTTPException(status_code=404, detail="Daraxt topilmadi")
-
         return tree_detail
     except HTTPException:
         raise
@@ -409,129 +358,67 @@ async def get_tree_detail(
 
 @app.get("/api/v1/users/rating", response_model=RatingResponse, tags=["Rating"])
 async def get_rating(
-    range: str = Query("7d", description="7d, 30d, custom"),
+    range: str = Query("7d"),
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to"),
     db: AsyncSession = Depends(get_db)
 ):
     rating_service = RatingService(db)
-
     try:
         leaderboard = await rating_service.get_leaderboard(
-            range_type=range,
-            from_date=from_date,
-            to_date=to_date
+            range_type=range, from_date=from_date, to_date=to_date
         )
-
         return RatingResponse(
-            range_type=range,
-            from_date=from_date,
-            to_date=to_date,
-            items=leaderboard
+            range_type=range, from_date=from_date, to_date=to_date, items=leaderboard
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/users/{user_id}/stats", response_model=UserStatsResponse, tags=["Rating"])
-async def get_user_stats(
-    user_id: str,
-    db: AsyncSession = Depends(get_db)
-):
+async def get_user_stats(user_id: str, db: AsyncSession = Depends(get_db)):
     rating_service = RatingService(db)
-
     try:
-        stats = await rating_service.get_user_stats(user_id)
-        return stats
+        return await rating_service.get_user_stats(user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
-# LEGACY ENDPOINTS (Backward Compatibility)
+# LEGACY ENDPOINTS
 # ============================================================================
 
 @app.post("/api/v1/trees/nearby", tags=["Trees (Legacy)"])
-async def legacy_nearby_trees(
-    request: NearbyTreesSearchRequest,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    LEGACY: POST method for backward compatibility
-    Use GET /api/v1/trees/nearby instead
-    """
+async def legacy_nearby_trees(request: NearbyTreesSearchRequest, db: AsyncSession = Depends(get_db)):
+    """LEGACY: POST method for backward compatibility"""
     try:
         service = NearbyTreesService(db=db)
-        
         trees = await service.get_nearby_trees(
-            user_lat=request.latitude,
-            user_lon=request.longitude,
-            radius_km=request.radius_km,
-            limit=request.limit,
-            include_satellite=True,
-            include_user_planted=True
+            user_lat=request.latitude, user_lon=request.longitude,
+            radius_km=request.radius_km, limit=request.limit,
+            include_satellite=True, include_user_planted=True
         )
-        
         return {
-            "user_location": {
-                "latitude": request.latitude,
-                "longitude": request.longitude
-            },
-            "radius_km": request.radius_km,
-            "total_found": len(trees),
-            "trees": trees
+            "user_location": {"latitude": request.latitude, "longitude": request.longitude},
+            "radius_km": request.radius_km, "total_found": len(trees), "trees": trees
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-# main.py ga QO'SHILISHI KERAK BO'LGAN YANGI ENDPOINTLAR
-# Mavjud endpointlar bilan birga ishlaydi
-
-from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime, timedelta
-import locale
-
-# Import yangi servislar
-from services.tree_health_service import TreeHealthService
-from services.enhanced_task_service import EnhancedTaskService
-
-
 # ============================================================================
-# 1. TREE HEALTH STATUS API
+# TREE HEALTH STATUS API
 # ============================================================================
 
 @app.get("/api/v1/trees/{tree_id}/health", tags=["Tree Health"])
-async def get_tree_health_status(
-    tree_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Daraxt salomatlik holati va tarixini olish
-    
-    Qaytaradi:
-    - Joriy salomatlik holati
-    - Namlik darajasi
-    - Oxirgi AI tahlili
-    - Salomatlik tendentsiyasi
-    - Tarix (oxirgi 10 ta tekshiruv)
-    
-    Misol:
-    GET /api/v1/trees/abc123/health
-    """
+async def get_tree_health_status(tree_id: str, db: AsyncSession = Depends(get_db)):
+    """Daraxt salomatlik holati"""
     try:
         service = TreeHealthService(db)
         health_data = await service.get_tree_health_status(tree_id)
-        
         if not health_data:
             raise HTTPException(status_code=404, detail="Daraxt topilmadi")
-        
-        return {
-            "success": True,
-            "data": health_data
-        }
+        return {"success": True, "data": health_data}
     except HTTPException:
         raise
     except Exception as e:
@@ -541,67 +428,27 @@ async def get_tree_health_status(
 @app.get("/api/v1/trees/{tree_id}/health/history", tags=["Tree Health"])
 async def get_tree_health_history(
     tree_id: str,
-    limit: int = Query(20, ge=1, le=100, description="Nechta yozuv"),
+    limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Daraxt salomatlik tarixini olish
-    
-    Qaytaradi oxirgi N ta tekshiruvni chronologic tartibda
-    
-    Misol:
-    GET /api/v1/trees/abc123/health/history?limit=30
-    """
+    """Daraxt salomatlik tarixi"""
     try:
         service = TreeHealthService(db)
         history = await service.get_health_history(tree_id, limit)
-        
-        return {
-            "success": True,
-            "tree_id": tree_id,
-            "total": len(history),
-            "history": history
-        }
+        return {"success": True, "tree_id": tree_id, "total": len(history), "history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================================
-# 2. ENHANCED TREE DETAILS API
-# ============================================================================
-
 @app.get("/api/v1/trees/{tree_id}/full", tags=["Trees"])
-async def get_full_tree_details(
-    tree_id: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Daraxt to'liq ma'lumotlari (barcha detallar)
-    
-    Qaytaradi:
-    - Asosiy ma'lumotlar (ekilgan sana, joy, rasm)
-    - Joriy holat (salomatlik, namlik, yetuklik)
-    - Oxirgi AI tahlili (batafsil)
-    - Barcha vazifalar (active, completed)
-    - Statistika (sug'orish, tekshiruvlar)
-    - Rasmlar tarixi
-    
-    Bu endpoint barcha kerakli ma'lumotlarni bitta so'rovda beradi!
-    
-    Misol:
-    GET /api/v1/trees/abc123/full
-    """
+async def get_full_tree_details(tree_id: str, db: AsyncSession = Depends(get_db)):
+    """Daraxt to'liq ma'lumotlari"""
     try:
         service = TreeHealthService(db)
         details = await service.get_full_tree_details(tree_id)
-        
         if not details:
             raise HTTPException(status_code=404, detail="Daraxt topilmadi")
-        
-        return {
-            "success": True,
-            "tree": details
-        }
+        return {"success": True, "tree": details}
     except HTTPException:
         raise
     except Exception as e:
@@ -609,7 +456,7 @@ async def get_full_tree_details(
 
 
 # ============================================================================
-# 3. TASK COMPLETION WITH IMAGE (MANDATORY)
+# TASK COMPLETION WITH IMAGE
 # ============================================================================
 
 @app.post("/api/v1/tasks/{task_id}/complete", tags=["Tasks"])
@@ -619,45 +466,17 @@ async def complete_task_with_image(
     latitude: float = Form(...),
     longitude: float = Form(...),
     client_timestamp: str = Form(...),
-    image: UploadFile = File(..., description="Vazifa uchun rasm MAJBURIY"),
+    image: UploadFile = File(...),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Vazifani rasm bilan bajarish (RASM MAJBURIY!)
-    
-    Har qanday vazifa turi uchun rasm yuborish shart:
-    - watering: Sug'orilgan daraxt rasmi
-    - photo_check: Daraxt holati rasmi
-    - fertilizing: O'g'itlangan joy rasmi
-    - pruning: Qirqilgan/tozalangan rasm
-    - pest_check: Zararkunandalar tekshiruv rasmi
-    
-    AI rasm orqali:
-    1. Vazifa to'g'ri bajarilganini tekshiradi
-    2. Daraxt holatini tahlil qiladi
-    3. Batafsil feedback beradi
-    4. Keyingi vazifalarni yaratadi
-    
-    Misol:
-    POST /api/v1/tasks/task123/complete
-    Form data:
-    - user_id: user123
-    - latitude: 41.2995
-    - longitude: 69.2401
-    - client_timestamp: 2024-01-15T10:30:00
-    - image: [FILE]
-    """
+    """Vazifani rasm bilan bajarish"""
     try:
         service = EnhancedTaskService(db)
         result = await service.complete_task_with_validation(
-            task_id=task_id,
-            user_id=user_id,
-            latitude=latitude,
-            longitude=longitude,
-            client_timestamp=client_timestamp,
-            image_file=image
+            task_id=task_id, user_id=user_id,
+            latitude=latitude, longitude=longitude,
+            client_timestamp=client_timestamp, image_file=image
         )
-        
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -666,7 +485,7 @@ async def complete_task_with_image(
 
 
 # ============================================================================
-# 4. NEARBY TASKS (ENHANCED WITH TIME FORMATTING)
+# NEARBY TASKS ENHANCED
 # ============================================================================
 
 @app.get("/api/v1/tasks/nearby/enhanced", tags=["Tasks"])
@@ -677,67 +496,57 @@ async def get_nearby_tasks_enhanced(
     radius_km: float = Query(2.0, ge=0.5, le=10.0),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Yaqin atrofdagi vazifalar (kengaytirilgan)
-    
-    Farqi:
-    - Vaqt odam tushunadigan formatda ("2 soat 30 daqiqa")
-    - Masofa o'zbek tilida ("1.5 km" yoki "250 metr")
-    - Daraxt egasining ismi
-    - Vazifa batafsil tavsifi
-    - Band qilish imkoniyati va muddat
-    
-    Faqat vaqti kelgan yoki yaqinlashgan vazifalar ko'rsatiladi!
-    Vaqti kelmagan vazifalarni band qilib bo'lmaydi.
-    
-    Misol:
-    GET /api/v1/tasks/nearby/enhanced?user_id=user123&latitude=41.2995&longitude=69.2401&radius_km=2
-    """
+    """Yaqin atrofdagi vazifalar (kengaytirilgan)"""
     try:
         service = EnhancedTaskService(db)
         tasks = await service.get_nearby_tasks_enhanced(
-            user_id=user_id,
-            latitude=latitude,
-            longitude=longitude,
-            radius_km=radius_km
+            user_id=user_id, latitude=latitude,
+            longitude=longitude, radius_km=radius_km
         )
-        
         return {
             "success": True,
             "user_location": {"lat": latitude, "lon": longitude},
-            "radius_km": radius_km,
-            "total": len(tasks),
-            "available_tasks": tasks
+            "radius_km": radius_km, "total": len(tasks), "available_tasks": tasks
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# TASK CLAIM ENHANCED - FIXED: Accept JSON body
+# ============================================================================
+
+from pydantic import BaseModel
+
+class ClaimTaskRequest(BaseModel):
+    user_id: str
+
 @app.post("/api/v1/tasks/{task_id}/claim/enhanced", tags=["Tasks"])
 async def claim_task_enhanced(
     task_id: str,
-    user_id: str = Query(..., description="User ID"),
+    request: ClaimTaskRequest = None,
+    user_id: Optional[str] = Query(None, description="User ID (query param)"),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Vazifani band qilish (kengaytirilgan)
-    
-    Shartlar:
-    - Vazifa vaqti kelgan bo'lishi kerak (yoki 24 soat ichida)
-    - Boshqa user band qilmagan bo'lishi kerak
-    - Band qilgandan keyin 30 daqiqa ichida bajarish shart
-    - Aks holda -30 ball jarima va vazifa bo'shaydi
-    
-    Misol:
-    POST /api/v1/tasks/task123/claim/enhanced?user_id=user123
+    Accepts user_id from JSON body OR Query parameter
     """
+    # Get user_id from either source
+    actual_user_id = None
+    if request and request.user_id:
+        actual_user_id = request.user_id
+    elif user_id:
+        actual_user_id = user_id
+    
+    if not actual_user_id:
+        raise HTTPException(status_code=400, detail="user_id majburiy")
+    
     try:
         service = EnhancedTaskService(db)
-        result = await service.claim_task_enhanced(task_id, user_id)
-        
+        result = await service.claim_task_enhanced(task_id, actual_user_id)
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['message'])
-        
         return result
     except HTTPException:
         raise
@@ -746,44 +555,23 @@ async def claim_task_enhanced(
 
 
 # ============================================================================
-# 5. GLOBAL STATISTICS
+# GLOBAL STATISTICS
 # ============================================================================
 
 @app.get("/api/v1/statistics/global", tags=["Statistics"])
-async def get_global_statistics(
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Global tizim statistikasi
-    
-    Qaytaradi:
-    - Jami ekilgan daraxtlar soni
-    - Faol daraxtlar soni
-    - Jami foydalanuvchilar
-    - Bajarilgan vazifalar
-    - O'rtacha daraxt salomatligi
-    - Holat bo'yicha taqsimlash
-    - Oxirgi 7 va 30 kundagi ekinlar
-    
-    Misol:
-    GET /api/v1/statistics/global
-    """
+async def get_global_statistics(db: AsyncSession = Depends(get_db)):
+    """Global tizim statistikasi"""
     try:
         from services.statistics_service import StatisticsService
         service = StatisticsService(db)
         stats = await service.get_global_statistics()
-        
-        return {
-            "success": True,
-            "statistics": stats,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        return {"success": True, "statistics": stats, "timestamp": datetime.utcnow().isoformat()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
-# 6. RATING / LEADERBOARD (ENHANCED)
+# RATING LEADERBOARD ENHANCED
 # ============================================================================
 
 @app.get("/api/v1/rating/leaderboard", tags=["Rating"])
@@ -792,133 +580,70 @@ async def get_enhanced_leaderboard(
     limit: int = Query(50, ge=10, le=200),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Lider taxtasi (kengaytirilgan)
-    
-    Parametrlar:
-    - period: "7days" (7 kun), "30days" (30 kun), "all_time" (Barcha vaqt)
-    - limit: Ko'rsatiladigan foydalanuvchilar soni (10-200)
-    
-    Qaytaradi har bir user uchun:
-    - Joylanish (rank)
-    - Umumiy ballari
-    - Bajarilgan vazifalar
-    - Ekilgan daraxtlar
-    - G'amxo'rlik bahosi (0-100)
-    - Oxirgi faollik
-    
-    O'zbek tilida vaqt ko'rsatiladi: "7 kun", "30 kun", "Barcha vaqt"
-    
-    Misol:
-    GET /api/v1/rating/leaderboard?period=7days&limit=100
-    """
+    """Lider taxtasi (kengaytirilgan)"""
     try:
         from services.rating_enhanced_service import RatingEnhancedService
         service = RatingEnhancedService(db)
-        
         period_map = {
             "7days": ("7 kun", 7),
             "30days": ("30 kun", 30),
             "all_time": ("Barcha vaqt", None)
         }
-        
         period_label, days = period_map[period]
         leaderboard = await service.get_enhanced_leaderboard(days, limit)
-        
         return {
-            "success": True,
-            "period": period_label,
+            "success": True, "period": period_label,
             "period_start": (datetime.utcnow() - timedelta(days=days)).isoformat() if days else None,
             "period_end": datetime.utcnow().isoformat(),
-            "total_shown": len(leaderboard),
-            "leaderboard": leaderboard
+            "total_shown": len(leaderboard), "leaderboard": leaderboard
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
-# 7. USER'S OWN TREES WITH FULL DETAILS
+# USER TREES DETAILED
 # ============================================================================
 
 @app.get("/api/v1/users/{user_id}/trees/detailed", tags=["My Trees"])
 async def get_user_trees_detailed(
     user_id: str,
-    include_completed: bool = Query(False, description="Tugatilgan vazifalarni qo'shish"),
+    include_completed: bool = Query(False),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Foydalanuvchi daraxtlari (batafsil)
-    
-    Har bir daraxt uchun:
-    - Asosiy ma'lumotlar va rasm
-    - Joriy holat va salomatlik
-    - Active vazifalar (vaqt bilan)
-    - Oxirgi AI tahlili
-    - Statistika
-    
-    Bu endpoint mobile app uchun moslashtirilgan:
-    - Vaqtlar odam tushunadigan ("3 kun oldin")
-    - Rasmlar URL bilan
-    - Vazifalar uchun countdown
-    
-    Misol:
-    GET /api/v1/users/user123/trees/detailed
-    """
+    """Foydalanuvchi daraxtlari (batafsil)"""
     try:
         service = TreeHealthService(db)
         trees = await service.get_user_trees_detailed(user_id, include_completed)
-        
-        return {
-            "success": True,
-            "user_id": user_id,
-            "total_trees": len(trees),
-            "trees": trees
-        }
+        return {"success": True, "user_id": user_id, "total_trees": len(trees), "trees": trees}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
-# HELPER FUNCTIONS FOR TIME FORMATTING
+# HELPER FUNCTIONS
 # ============================================================================
 
 def format_relative_time(target_date: datetime) -> str:
-    """
-    Vaqtni o'zbek tilida formatlash
-    
-    Misol:
-    - "2 daqiqa ichida"
-    - "1 soat 15 daqiqa ichida"
-    - "Bugun 18:00"
-    - "Ertaga"
-    - "3 kun ichida"
-    - "2 hafta oldin"
-    """
+    """Vaqtni o'zbek tilida formatlash"""
     now = datetime.utcnow()
     delta = target_date - now
     
     if delta.total_seconds() < 0:
-        # O'tgan vaqt
         delta = -delta
         if delta.days > 30:
-            months = delta.days // 30
-            return f"{months} oy oldin"
+            return f"{delta.days // 30} oy oldin"
         elif delta.days > 0:
             return f"{delta.days} kun oldin"
         elif delta.seconds >= 3600:
-            hours = delta.seconds // 3600
-            return f"{hours} soat oldin"
+            return f"{delta.seconds // 3600} soat oldin"
         elif delta.seconds >= 60:
-            minutes = delta.seconds // 60
-            return f"{minutes} daqiqa oldin"
+            return f"{delta.seconds // 60} daqiqa oldin"
         else:
             return "Hozir"
     else:
-        # Kelajak vaqt
         if delta.days > 30:
-            months = delta.days // 30
-            return f"{months} oy ichida"
+            return f"{delta.days // 30} oy ichida"
         elif delta.days > 1:
             return f"{delta.days} kun ichida"
         elif delta.days == 1:
@@ -926,29 +651,19 @@ def format_relative_time(target_date: datetime) -> str:
         elif delta.seconds >= 3600:
             hours = delta.seconds // 3600
             minutes = (delta.seconds % 3600) // 60
-            if minutes > 0:
-                return f"{hours} soat {minutes} daqiqa ichida"
-            return f"{hours} soat ichida"
+            return f"{hours} soat {minutes} daqiqa ichida" if minutes else f"{hours} soat ichida"
         elif delta.seconds >= 60:
-            minutes = delta.seconds // 60
-            return f"{minutes} daqiqa ichida"
+            return f"{delta.seconds // 60} daqiqa ichida"
         else:
             return "Darhol"
 
 
 def format_distance(meters: float) -> str:
-    """
-    Masofani o'zbek tilida formatlash
-    
-    Misol:
-    - "50 metr"
-    - "1.2 km"
-    """
+    """Masofani formatlash"""
     if meters < 1000:
         return f"{int(meters)} metr"
-    else:
-        km = meters / 1000
-        return f"{km:.1f} km"
+    return f"{meters / 1000:.1f} km"
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5512, reload=True)

@@ -1,10 +1,11 @@
 """
 Complete check-in processing service
+Fixed: Location tolerance increased, plant detection improved
 """
 import hashlib
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict
 from pathlib import Path
 import uuid
 from math import radians, sin, cos, sqrt, atan2
@@ -27,9 +28,12 @@ class CheckInService:
     MEDIA_DIR = Path("media/checkins")
     DUPLICATE_HASH_THRESHOLD = 5
 
-    # GPS MASOFALAR - To'g'irlangan
-    MAX_DISTANCE_METERS_OWNER = 50     # Daraxt egasi uchun 50 metr
-    MAX_DISTANCE_METERS_PUBLIC = 100   # Boshqa foydalanuvchilar uchun 100 metr
+    # GPS MASOFALAR - KENGAYTIRILGAN (GPS xatoliklari uchun)
+    MAX_DISTANCE_METERS_OWNER = 150     # Daraxt egasi uchun 150 metr (oldin 50)
+    MAX_DISTANCE_METERS_PUBLIC = 200    # Boshqa foydalanuvchilar uchun 200 metr (oldin 100)
+    
+    # Sug'orish uchun alohida (yanada yumshoq)
+    MAX_DISTANCE_METERS_WATERING = 250  # Sug'orish uchun 250 metr
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -61,7 +65,7 @@ class CheckInService:
                 image_path, file_hash, perceptual_hash, image_bytes, current_date
             )
 
-        # EXISTING TREE
+        # EXISTING TREE (watering, photo_check, etc.)
         return await self._process_existing_tree(
             user_id, tree_id, task_id, latitude, longitude, client_timestamp,
             phase_hint, image_path, file_hash, perceptual_hash, image_bytes, current_date
@@ -88,8 +92,9 @@ class CheckInService:
         return str(file_path), file_hash, p_hash, image_bytes
 
     def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Distance in meters"""
-        R = 6371000
+        """Distance in meters using Haversine formula"""
+        R = 6371000  # Earth radius in meters
+        
         lat1_rad = radians(lat1)
         lat2_rad = radians(lat2)
         dlat = radians(lat2 - lat1)
@@ -112,7 +117,7 @@ class CheckInService:
         image_bytes: bytes,
         current_date: datetime
     ) -> CheckInAnalysisResponse:
-        """Process new tree planting"""
+        """Process new tree/plant planting - YUMSHATILGAN FILTER"""
 
         # Check duplicates (exact file hash in last 1 hour)
         recent_q = select(CheckIn).where(and_(
@@ -136,30 +141,36 @@ class CheckInService:
 
         # AI Analysis
         ai_result = await self.ai_service.analyze_single_image(image_bytes)
-
-        # STRICT VALIDATION (yumshatilgan)
+        maturity = ai_result.get("maturity", "unknown")
+        # YUMSHATILGAN VALIDATSIYA - yangi format
         rejection_code = None
         error_messages = {
-            "NOT_TREE": "Bu daraxt emas. Iltimos, haqiqiy daraxt rasmini yuklang.",
+            "NOT_PLANT": "Bu o'simlik emas. Iltimos, daraxt, ko'chat, gul yoki xonaki o'simlik rasmini yuklang.",
             "FAKE_PHOTO": "Bu haqiqiy surat emas. Iltimos, jonli rasm oling.",
-            "NOT_SEEDLING_OR_YOUNG": "Faqat yangi ekilgan ko'chat yoki yosh daraxtlar qabul qilinadi.",
-            "TOO_BIG_TREE": "Bu daraxt juda katta. Biz faqat yangi ko'chat va yosh daraxtlarni qabul qilamiz."
+            "TOO_BIG": "Bu daraxt juda katta (2.5+ metr). Faqat yosh va kichik o'simliklar qabul qilinadi.",
+            "TOO_THICK": "Bu daraxt juda yo'g'on tanali. Bu tabiiy o'sgan daraxt, odam ekmagan.",
         }
 
-        is_tree = ai_result.get("is_tree")
-        is_real = ai_result.get("is_real_photo")
-        maturity = ai_result.get("maturity")
+        is_plant = ai_result.get("is_plant", ai_result.get("is_tree", False))
+        is_real = ai_result.get("is_real_photo", True)
+        is_acceptable = ai_result.get("is_acceptable", True)
+        rejection_reason = ai_result.get("rejection_reason")
+        
+        size_analysis = ai_result.get("size_analysis", {})
+        is_too_tall = size_analysis.get("is_too_tall", False)
+        is_too_thick = size_analysis.get("is_trunk_too_thick", False)
 
-        if not is_tree:
-            rejection_code = "NOT_TREE"
+        # Validatsiya
+        if not is_plant:
+            rejection_code = "NOT_PLANT"
         elif not is_real:
             rejection_code = "FAKE_PHOTO"
-        # Juda katta daraxtlar (mature) qabul qilinmaydi
-        elif maturity == "mature":
-            rejection_code = "TOO_BIG_TREE"
-        # Agar seedling ham emas, young ham emas (unknown, adult va h.k.)
-        elif maturity not in ["seedling", "young"]:
-            rejection_code = "NOT_SEEDLING_OR_YOUNG"
+        elif is_too_tall or (rejection_reason == "TOO_BIG"):
+            rejection_code = "TOO_BIG"
+        elif is_too_thick or (rejection_reason == "TOO_THICK"):
+            rejection_code = "TOO_THICK"
+        elif not is_acceptable and rejection_reason:
+            rejection_code = rejection_reason
 
         if rejection_code:
             # Save rejected checkin
@@ -173,7 +184,7 @@ class CheckInService:
                 client_timestamp=client_timestamp,
                 type="planting",
                 ai_raw_response=ai_result,
-                ai_tree=is_tree,
+                ai_tree=is_plant,
                 ai_real_photo=is_real,
                 ai_seedling=ai_result.get("is_seedling"),
                 ai_maturity=maturity,
@@ -192,15 +203,18 @@ class CheckInService:
                 accepted=False,
                 error_code=rejection_code,
                 message=error_messages.get(rejection_code, "Rad etildi"),
-                analysis=AIAnalysis(**ai_result),
+                analysis=self._create_ai_analysis(ai_result),
                 points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
             )
 
-        # ACCEPTED - Create tree
+        # QABUL QILINDI - O'simlik yaratish
         # Phase ni AI natijasiga qarab belgilaymiz
-        phase = maturity or "seedling"
-        if phase not in ["seedling", "young", "mature"]:
-            phase = "seedling"
+        maturity = ai_result.get("maturity", "unknown")
+        phase = maturity if maturity in ["seedling", "young", "mature", "houseplant"] else "seedling"
+        
+        # O'simlik nomi (comment uchun)
+        plant_info = ai_result.get("plant_info", {})
+        plant_name = plant_info.get("name_uzbek") or plant_info.get("name_common") or "Noma'lum o'simlik"
 
         tree = Tree(
             id=str(uuid.uuid4()),
@@ -228,7 +242,7 @@ class CheckInService:
             client_timestamp=client_timestamp,
             type="planting",
             ai_raw_response=ai_result,
-            ai_tree=is_tree,
+            ai_tree=is_plant,
             ai_real_photo=is_real,
             ai_seedling=ai_result.get("is_seedling"),
             ai_maturity=maturity,
@@ -257,7 +271,7 @@ class CheckInService:
             status="ANALYZED",
             accepted=True,
             tree_id=tree.id,
-            analysis=AIAnalysis(**ai_result),
+            analysis=self._create_ai_analysis(ai_result),
             new_tasks=[TaskSchema.from_orm(t) for t in initial_tasks],
             updated_tasks=[],
             points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
@@ -278,7 +292,7 @@ class CheckInService:
         image_bytes: bytes,
         current_date: datetime
     ) -> CheckInAnalysisResponse:
-        """Process check-in for existing tree"""
+        """Process check-in for existing tree - YUMSHATILGAN LOKATSIYA"""
 
         # Load tree
         tree_q = select(Tree).where(Tree.id == tree_id)
@@ -288,9 +302,17 @@ class CheckInService:
         if not tree:
             raise ValueError("Daraxt topilmadi")
 
-        # Check GPS distance
+        # Check GPS distance - KENGAYTIRILGAN TOLERANS
         is_owner = (tree.user_id == user_id)
-        max_distance = self.MAX_DISTANCE_METERS_OWNER if is_owner else self.MAX_DISTANCE_METERS_PUBLIC
+        is_watering = phase_hint == "watering" or (task_id is not None)
+        
+        # Vazifa turiga qarab masofa
+        if is_watering:
+            max_distance = self.MAX_DISTANCE_METERS_WATERING  # 250m
+        elif is_owner:
+            max_distance = self.MAX_DISTANCE_METERS_OWNER  # 150m
+        else:
+            max_distance = self.MAX_DISTANCE_METERS_PUBLIC  # 200m
 
         # Use centroid if available, otherwise use original coordinates
         tree_lat = tree.centroid_lat if tree.centroid_lat else tree.latitude
@@ -301,20 +323,22 @@ class CheckInService:
             tree_lat, tree_lon
         )
 
-        # MUHIM: Faqat juda uzoq bo'lsa rad etamiz
+        # LOG distance for debugging
+        print(f"[CheckIn] Distance check: user=({latitude}, {longitude}), tree=({tree_lat}, {tree_lon}), distance={distance}m, max={max_distance}m")
+
+        # MUHIM: Juda uzoq bo'lsagina rad etamiz
         if distance > max_distance:
             user = await self._get_user(user_id)
-            owner_text = "o'z" if is_owner else "bu"
             return CheckInAnalysisResponse(
                 status="ANALYZED",
                 accepted=False,
                 error_code="LOCATION_MISMATCH",
-                message=f"Siz {owner_text} daraxtdan {int(distance)}m uzoqdasiz. Maksimal masofa: {int(max_distance)}m",
+                message=f"Siz o'simlikdan {int(distance)}m uzoqdasiz. Iltimos, yaqinroq boring (max: {int(max_distance)}m)",
                 tree_id=tree_id,
                 points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
             )
 
-        # Get previous checkin
+        # Get previous checkin for comparison
         prev_q = select(CheckIn).where(and_(
             CheckIn.tree_id == tree_id,
             CheckIn.accepted == True
@@ -335,40 +359,72 @@ class CheckInService:
                 points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
             )
 
-        # AI Analysis
-        if previous_checkin:
-            with open(previous_checkin.image_path, 'rb') as f:
-                prev_bytes = f.read()
-            ai_result = await self.ai_service.compare_images(prev_bytes, image_bytes)
+        # AI Analysis - sug'orish uchun maxsus
+        if phase_hint == "watering" or (task_id is not None):
+            # Vazifa bor - sug'orish yoki tekshiruv
+            if previous_checkin:
+                with open(previous_checkin.image_path, 'rb') as f:
+                    prev_bytes = f.read()
+                
+                # Yangi comparison method ishlatamiz
+                task_type = phase_hint or "photo_check"
+                ai_result = await self.ai_service.compare_images_for_task(prev_bytes, image_bytes, task_type)
 
-            if ai_result.get("same_scene", False):
-                user = await self._get_user(user_id)
-                return CheckInAnalysisResponse(
-                    status="ANALYZED",
-                    accepted=False,
-                    cheat_suspected=True,
-                    error_code="SAME_SCENE",
-                    message="Rasm bir xil vaqt va joyda olingan",
-                    tree_id=tree_id,
-                    points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
-                )
+                # Bir xil o'simlik emasmi tekshirish
+                if not ai_result.get("is_same_plant", True):
+                    confidence = ai_result.get("confidence_percent", 0)
+                    user = await self._get_user(user_id)
+                    return CheckInAnalysisResponse(
+                        status="ANALYZED",
+                        accepted=False,
+                        error_code="DIFFERENT_PLANT",
+                        message=f"Bu boshqa o'simlik. Iltimos, ro'yxatdagi o'simlikni rasmga oling. (O'xshashlik: {confidence}%)",
+                        tree_id=tree_id,
+                        analysis=self._create_ai_analysis(ai_result),
+                        points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
+                    )
+
+                # Firibgarlik tekshiruvi
+                if ai_result.get("is_fraud_attempt"):
+                    fraud_reason = ai_result.get("fraud_reason", "UNKNOWN")
+                    user = await self._get_user(user_id)
+                    return CheckInAnalysisResponse(
+                        status="ANALYZED",
+                        accepted=False,
+                        cheat_suspected=True,
+                        error_code=f"FRAUD_{fraud_reason}",
+                        message="Firibgarlik aniqlandi. Iltimos, haqiqiy rasm yuboring.",
+                        tree_id=tree_id,
+                        points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
+                    )
+
+                # same_scene tekshiruvi
+                if ai_result.get("same_scene", False):
+                    user = await self._get_user(user_id)
+                    return CheckInAnalysisResponse(
+                        status="ANALYZED",
+                        accepted=False,
+                        cheat_suspected=True,
+                        error_code="SAME_SCENE",
+                        message="Bu xuddi oldingi rasm. Iltimos, yangi rasm oling.",
+                        tree_id=tree_id,
+                        points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
+                    )
+            else:
+                # Birinchi marta - oddiy analyze qilamiz
+                ai_result = await self.ai_service.analyze_single_image(image_bytes)
         else:
-            ai_result = await self.ai_service.analyze_single_image(image_bytes)
+            # Oddiy monitoring
+            if previous_checkin:
+                with open(previous_checkin.image_path, 'rb') as f:
+                    prev_bytes = f.read()
+                ai_result = await self.ai_service.compare_images_for_task(prev_bytes, image_bytes, "photo_check")
+            else:
+                ai_result = await self.ai_service.analyze_single_image(image_bytes)
 
-        # Validate is_tree and is_real_photo
-        if not ai_result.get("is_tree", True):
-            user = await self._get_user(user_id)
-            return CheckInAnalysisResponse(
-                status="ANALYZED",
-                accepted=False,
-                error_code="NO_TREE_IN_IMAGE",
-                message="Rasmda daraxt ko'rinmayapti",
-                tree_id=tree_id,
-                analysis=AIAnalysis(**ai_result) if all(k in ai_result for k in ["is_tree", "is_real_photo", "is_seedling", "maturity", "health", "soil_moisture", "comment"]) else None,
-                points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
-            )
-
-        if not ai_result.get("is_real_photo", True):
+        # Validatsiya - juda yumshoq
+        # Faqat aniq fake bo'lsa rad etamiz
+        if ai_result.get("is_real_photo") == False:
             user = await self._get_user(user_id)
             return CheckInAnalysisResponse(
                 status="ANALYZED",
@@ -376,7 +432,7 @@ class CheckInService:
                 error_code="FAKE_PHOTO",
                 message="Bu haqiqiy surat emas",
                 tree_id=tree_id,
-                analysis=AIAnalysis(**ai_result) if all(k in ai_result for k in ["is_tree", "is_real_photo", "is_seedling", "maturity", "health", "soil_moisture", "comment"]) else None,
+                analysis=self._create_ai_analysis(ai_result),
                 points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
             )
 
@@ -394,7 +450,8 @@ class CheckInService:
                 raise ValueError("Vazifa topilmadi")
 
             # Check if overdue
-            if current_date > task.due_date and task.status == "pending":
+            if current_date > task.due_date + timedelta(hours=24) and task.status == "pending":
+                # 24 soatdan oshgan - jarima
                 task.status = "off"
                 task.penalty_points = -35
 
@@ -416,7 +473,7 @@ class CheckInService:
                     status="ANALYZED",
                     accepted=False,
                     error_code="TASK_LATE",
-                    message="Vazifa muddati o'tgan, -35 ball jarimasi",
+                    message="Vazifa muddati o'tgan (24+ soat), -35 ball jarimasi",
                     tree_id=tree_id,
                     updated_tasks=[TaskSchema.from_orm(task)],
                     points=PointsSummary(awarded=0, penalty=penalty_points, total=user.total_points)
@@ -434,10 +491,10 @@ class CheckInService:
                     points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
                 )
 
-            # Check reservation timeout
+            # Check reservation timeout - 30 daqiqa -> 60 daqiqaga oshirdik
             if task.status == "claimed" and task.assigned_user_id == user_id and task.claimed_at:
-                if current_date > task.claimed_at + timedelta(minutes=30):
-                    # Apply penalty
+                if current_date > task.claimed_at + timedelta(minutes=60):
+                    # 60 daqiqa o'tdi - jarima
                     user = await self._get_user(user_id)
                     user.total_points -= 30
                     penalty_points = -30
@@ -461,69 +518,32 @@ class CheckInService:
                         status="ANALYZED",
                         accepted=False,
                         error_code="RESERVATION_TIMEOUT",
-                        message="Vazifa vaqti tugagan, -30 ball jarimasi",
+                        message="Vazifa vaqti tugagan (60 daqiqa), -30 ball jarimasi",
                         tree_id=tree_id,
                         points=PointsSummary(awarded=0, penalty=penalty_points, total=user.total_points)
                     )
 
-            # Complete task
-            if task.type == "watering":
-                if ai_result.get("soil_moisture") == "dry":
-                    # Not watered enough
-                    checkin = CheckIn(
-                        user_id=user_id,
-                        tree_id=tree_id,
-                        image_path=image_path,
-                        image_hash=file_hash,
-                        perceptual_hash=perceptual_hash,
-                        latitude=latitude,
-                        longitude=longitude,
-                        client_timestamp=client_timestamp,
-                        type="watering",
-                        ai_raw_response=ai_result,
-                        accepted=False,
-                        rejected_reason="LOW_MOISTURE"
-                    )
-                    self.db.add(checkin)
-                    await self.db.commit()
+            # Complete task - sug'orish uchun moisture tekshiruvi OLIB TASHLANDI
+            # Endi ixtiyoriy rasm bilan ham qabul qilinadi
+            task.status = "completed"
+            task.completed_at = current_date
+            awarded_points = task.reward_points
 
-                    user = await self._get_user(user_id)
-                    return CheckInAnalysisResponse(
-                        status="ANALYZED",
-                        accepted=False,
-                        error_code="LOW_MOISTURE",
-                        message="Tuproq hali ham quruq, qaytadan sug'oring",
-                        tree_id=tree_id,
-                        analysis=AIAnalysis(**ai_result) if all(k in ai_result for k in ["is_tree", "is_real_photo", "is_seedling", "maturity", "health", "soil_moisture", "comment"]) else None,
-                        points=PointsSummary(awarded=0, penalty=0, total=user.total_points if user else 0)
-                    )
+            # Check for initial bonus
+            if not tree.initial_bonus_awarded:
+                awarded_points += 50
+                tree.initial_bonus_awarded = True
 
-                # Success
-                task.status = "completed"
-                task.completed_at = current_date
-                awarded_points = task.reward_points
+                bonus_log = TaskCompletionLog(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    task_id=task_id,
+                    delta_points=50,
+                    reason="initial_bonus"
+                )
+                self.db.add(bonus_log)
 
-                # Check for initial bonus
-                if not tree.initial_bonus_awarded:
-                    awarded_points += 50
-                    tree.initial_bonus_awarded = True
-
-                    bonus_log = TaskCompletionLog(
-                        id=str(uuid.uuid4()),
-                        user_id=user_id,
-                        task_id=task_id,
-                        delta_points=50,
-                        reason="initial_bonus"
-                    )
-                    self.db.add(bonus_log)
-
-                completed_task = task
-
-            elif task.type in ["photo_check", "closeup", "clean_area"]:
-                task.status = "completed"
-                task.completed_at = current_date
-                awarded_points = task.reward_points
-                completed_task = task
+            completed_task = task
 
             # Update user points
             if awarded_points > 0:
@@ -551,8 +571,8 @@ class CheckInService:
             client_timestamp=client_timestamp,
             type=phase_hint or "monitoring",
             ai_raw_response=ai_result,
-            ai_tree=ai_result.get("is_tree"),
-            ai_real_photo=ai_result.get("is_real_photo"),
+            ai_tree=ai_result.get("is_tree", True),
+            ai_real_photo=ai_result.get("is_real_photo", True),
             ai_seedling=ai_result.get("is_seedling"),
             ai_maturity=ai_result.get("maturity"),
             ai_health=ai_result.get("health"),
@@ -563,8 +583,8 @@ class CheckInService:
         self.db.add(checkin)
 
         # Update tree
-        tree.last_health = ai_result.get("health")
-        tree.last_soil_moisture = ai_result.get("soil_moisture")
+        tree.last_health = ai_result.get("health") or tree.last_health
+        tree.last_soil_moisture = ai_result.get("soil_moisture") or tree.last_soil_moisture
         tree.last_analysis_at = current_date
 
         # Generate new tasks
@@ -592,7 +612,7 @@ class CheckInService:
             accepted=True,
             tree_id=tree_id,
             task_id=task_id,
-            analysis=AIAnalysis(**ai_result) if all(k in ai_result for k in ["is_tree", "is_real_photo", "is_seedling", "maturity", "health", "soil_moisture", "comment"]) else None,
+            analysis=self._create_ai_analysis(ai_result),
             new_tasks=[TaskSchema.from_orm(t) for t in new_tasks],
             updated_tasks=updated_tasks,
             points=PointsSummary(
@@ -601,6 +621,21 @@ class CheckInService:
                 total=user.total_points if user else 0
             )
         )
+
+    def _create_ai_analysis(self, ai_result: Dict) -> Optional[AIAnalysis]:
+        """Create AIAnalysis from result dict"""
+        try:
+            return AIAnalysis(
+                is_tree=ai_result.get("is_tree", ai_result.get("is_plant", True)),
+                is_real_photo=ai_result.get("is_real_photo", True),
+                is_seedling=ai_result.get("is_seedling", False),
+                maturity=ai_result.get("maturity", "unknown"),
+                health=ai_result.get("health", "unknown"),
+                soil_moisture=ai_result.get("soil_moisture", "unknown"),
+                comment=ai_result.get("comment", "")
+            )
+        except:
+            return None
 
     async def _get_user(self, user_id: str) -> Optional[User]:
         query = select(User).where(User.id == user_id)
