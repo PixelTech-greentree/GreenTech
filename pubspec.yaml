@@ -4,7 +4,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.5.0  # ← SDK constraint qo'shildi
+  sdk: ^3.5.0
 
 dependencies:
   flutter:
@@ -49,6 +49,13 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.1
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/logo/fiona.png"
+  remove_alpha_ios: false  
 
 flutter:
   uses-material-design: true
