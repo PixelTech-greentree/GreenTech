@@ -1,0 +1,58 @@
+name: greenify
+description: Tree planting and care application with gamification
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0  # ← SDK constraint qo'shildi
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  http_parser: ^4.0.2
+
+  # State Management
+  provider: ^6.1.1
+
+  # Network
+  dio: ^5.4.0
+
+  # Storage
+  shared_preferences: ^2.2.2
+
+  # UI Components
+  google_fonts: ^6.1.0
+  flutter_animate: ^4.3.0
+  cached_network_image: ^3.3.1
+
+  # Map
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.0
+
+  # Location
+  geolocator: ^11.0.0
+  permission_handler: ^11.1.0
+
+  # Utils
+  intl: ^0.20.2
+
+  # Image
+  image_picker: ^1.0.7
+
+  # Video
+  video_player: ^2.8.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo/
+    - assets/intro/
